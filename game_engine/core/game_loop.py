@@ -63,17 +63,42 @@ class GameLoop:
                     self.game_state.paused = not self.game_state.paused
                 elif event.key == pygame.K_r:
                     self.game_state.reset()
+                elif event.key == pygame.K_n:
+                    # Start new round (two-player)
+                    if self.game_state.num_players == 2 and self.game_state.game_over:
+                        if not self.game_state.start_new_round():
+                            # Match is over, full reset
+                            self.game_state.reset()
     
     def _update(self, dt):
         """Update game state"""
+        
+        # Handle countdown
+        if self.game_state.countdown_active:
+            self.game_state.countdown_timer -= dt
+            if self.game_state.countdown_timer <= 0:
+                self.game_state.countdown_active = False
+            return  # Don't update ships during countdown
+        
+        # Don't update ships if game is over
+        if self.game_state.game_over:
+            return
+        
         # Update each ship
         for player_id, ship in self.game_state.ships.items():
+            if not ship.alive:
+                continue
+                
             steering = self.controller.get_steering(player_id)
             throttle = self.controller.get_throttle(player_id)
             ship.update(steering, throttle, dt)
     
     def _check_collisions(self):
         """Check all collisions"""
+        # Don't check collisions if game is already over
+        if self.game_state.game_over:
+            return
+        
         for player_id, ship in self.game_state.ships.items():
             if not ship.alive:
                 continue
@@ -90,42 +115,70 @@ class GameLoop:
             # Check mine collisions
             for mine in self.game_state.mines:
                 if mine.check_collision(ship.position, Config.SHIP_SIZE):
-                    ship.kill()
-                    self.game_state.game_over = True
-                    
-                    # Trigger haptic effect
-                    if self.force_calculator:
-                        self.force_calculator.trigger_mine_hit(player_id)
+                    self._handle_ship_death(player_id, ship)
+                    return  # Exit immediately after death
             
-            # Check trail collisions (with own trail for now)
-            # Get all trail points
+            # Check own trail collisions
             all_trail_points = ship.get_all_trail_points()
             
-            # Check if ship hits its own trail (not the most recent segments)
-            trail_collision = False
             if len(all_trail_points) > 10:
                 for trail_point in all_trail_points[:-10]:
                     if ship.position.distance_to(trail_point) < Config.SHIP_SIZE:
-                        ship.kill()
-                        self.game_state.game_over = True
-                        trail_collision = True
-                        
-                        # Trigger haptic effect
-                        if self.force_calculator:
-                            self.force_calculator.trigger_mine_hit(player_id)
-                        break
+                        self._handle_ship_death(player_id, ship)
+                        return  # Exit immediately after death
+            
+            # TWO-PLAYER: Check opponent trail collisions
+            if self.game_state.num_players == 2:
+                other_player_id = 2 if player_id == 1 else 1
+                if other_player_id in self.game_state.ships:
+                    other_ship = self.game_state.ships[other_player_id]
+                    other_trail_points = other_ship.get_all_trail_points()
+                    
+                    # Check collision with opponent's trail
+                    for trail_point in other_trail_points:
+                        if ship.position.distance_to(trail_point) < Config.SHIP_SIZE:
+                            # Dying player loses, other player wins
+                            ship.kill()
+                            other_ship.kill()  # Freeze winner too
+                            self.game_state.declare_winner(other_player_id)
+                            
+                            # Trigger haptic effect on dying player
+                            if self.force_calculator:
+                                self.force_calculator.trigger_mine_hit(player_id)
+                            
+                            return  # Exit immediately after death
             
             # Update trail vibration effect based on proximity to trails
-            if self.force_calculator:
-                near_trail = self._check_near_trail(ship, all_trail_points)
-                if near_trail and not trail_collision:
+            if self.force_calculator and ship.alive:
+                near_trail = self._check_near_trail(ship, player_id)
+                if near_trail:
                     self.force_calculator.trigger_trail_collision(player_id)
                 else:
                     self.force_calculator.clear_trail_collision(player_id)
-    
-    def _check_near_trail(self, ship, trail_points):
+
+    def _handle_ship_death(self, player_id, ship):
+        """Handle ship death and end round"""
+        ship.kill()
+        
+        # Trigger haptic effect
+        if self.force_calculator:
+            self.force_calculator.trigger_mine_hit(player_id)
+        
+        # In two-player, declare winner and freeze both ships
+        if self.game_state.num_players == 2:
+            other_player = 2 if player_id == 1 else 1
+            self.game_state.declare_winner(other_player)
+            
+            # Kill other player too to freeze them
+            if other_player in self.game_state.ships:
+                self.game_state.ships[other_player].kill()
+        else:
+            # Single player - just game over
+            self.game_state.game_over = True
+
+    def _check_near_trail(self, ship, player_id):
         """
-        Check if ship is near (but not colliding with) trail
+        Check if ship is near (but not colliding with) any trail
         Used for warning vibration
         
         Returns:
@@ -133,11 +186,26 @@ class GameLoop:
         """
         warning_distance = Config.SHIP_SIZE * 2.5
         
-        if len(trail_points) > 10:
-            for trail_point in trail_points[:-10]:
+        # Check own trail
+        all_trail_points = ship.get_all_trail_points()
+        if len(all_trail_points) > 10:
+            for trail_point in all_trail_points[:-10]:
                 distance = ship.position.distance_to(trail_point)
                 if Config.SHIP_SIZE < distance < warning_distance:
                     return True
+        
+        # TWO-PLAYER: Check opponent trail
+        if self.game_state.num_players == 2:
+            other_player_id = 2 if player_id == 1 else 1
+            if other_player_id in self.game_state.ships:
+                other_ship = self.game_state.ships[other_player_id]
+                other_trail_points = other_ship.get_all_trail_points()
+                
+                for trail_point in other_trail_points:
+                    distance = ship.position.distance_to(trail_point)
+                    if Config.SHIP_SIZE < distance < warning_distance:
+                        return True
+        
         return False
     
     def _render(self):
@@ -181,11 +249,45 @@ class GameLoop:
             self.renderer.render_text("PAUSED", 
                 (Config.WINDOW_WIDTH // 2 - 80, Config.WINDOW_HEIGHT // 2),
                 (255, 255, 255))
-        
+    
         # Show game over message
         if self.game_state.game_over:
-            self.renderer.render_text("GAME OVER - Press R to restart", 
-                (Config.WINDOW_WIDTH // 2 - 250, Config.WINDOW_HEIGHT // 2),
-                (255, 0, 0))
-        
+            if self.game_state.num_players == 2:
+                # Two-player game over
+                match_winner = self.game_state.get_match_winner()
+                
+                if match_winner:
+                    # Match is completely over
+                    winner_color = Config.SHIP_COLOR_P1 if match_winner == 1 else Config.SHIP_COLOR_P2
+                    self.renderer.render_text_centered(
+                        f"Player {match_winner} WINS THE GAME!",
+                        Config.WINDOW_HEIGHT // 2 - 30,
+                        winner_color
+                    )
+                    self.renderer.render_text_centered(
+                        "Press R to play again",
+                        Config.WINDOW_HEIGHT // 2 + 10,
+                        (200, 200, 200)
+                    )
+                else:
+                    # Round over, but match continues
+                    winner_color = Config.SHIP_COLOR_P1 if self.game_state.winner == 1 else Config.SHIP_COLOR_P2
+                    self.renderer.render_text_centered(
+                        f"Player {self.game_state.winner} wins round {self.game_state.round_number}!",
+                        Config.WINDOW_HEIGHT // 2 - 30,
+                        winner_color
+                    )
+                    self.renderer.render_text_centered(
+                        "Press N for next round, R to restart game",
+                        Config.WINDOW_HEIGHT // 2 + 10,
+                        (200, 200, 200)
+                    )
+            else:
+                # Single player game over
+                self.renderer.render_text_centered(
+                    "GAME OVER - Press R to restart",
+                    Config.WINDOW_HEIGHT // 2,
+                    (255, 0, 0)
+                )
+            
         pygame.display.flip()

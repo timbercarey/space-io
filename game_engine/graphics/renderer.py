@@ -128,21 +128,46 @@ class Renderer:
     
     def render_hud(self, game_state):
         """Render heads-up display (score, status, etc.)"""
-        # Player 1 status (top-left)
         y_offset = 10
-        self.render_text(f"P1 Score: {game_state.scores[1]}", (10, y_offset), 
+        
+        # Player 1 status (top-left)
+        p1_text = f"P1 Score: {game_state.scores[1]}"
+        if game_state.num_players == 2:
+            p1_text += f" | Wins: {game_state.kills[1]}"
+        self.render_text(p1_text, (10, y_offset), 
                         Config.SHIP_COLOR_P1, small=True)
         
-        if hasattr(game_state, 'ships') and game_state.ships[1].boost_active:
+        if 1 in game_state.ships and game_state.ships[1].boost_active:
             self.render_text("BOOST!", (10, y_offset + 25), 
-                           (255, 255, 0), small=True)
+                        (255, 255, 0), small=True)
         
-        # Player 2 status (top-right) - will add when we have 2 players
-        # For now, just show FPS
+        # Player 2 status (top-right) - for two-player
+        if game_state.num_players == 2:
+            p2_text = f"P2 Score: {game_state.scores[2]}"
+            p2_text += f" | Wins: {game_state.kills[2]}"
+            text_surface = self.small_font.render(p2_text, True, Config.SHIP_COLOR_P2)
+            self.screen.blit(text_surface, 
+                            (Config.WINDOW_WIDTH - text_surface.get_width() - 10, y_offset))
+            
+            if 2 in game_state.ships and game_state.ships[2].boost_active:
+                boost_surface = self.small_font.render("BOOST!", True, (255, 255, 0))
+                self.screen.blit(boost_surface,
+                            (Config.WINDOW_WIDTH - boost_surface.get_width() - 10, y_offset + 25))
+        
+        # Round number (top-center) - for two-player
+        if game_state.num_players == 2:
+            round_text = f"Round {game_state.round_number} (Best of {game_state.best_of})"
+            round_surface = self.small_font.render(round_text, True, (200, 200, 200))
+            self.screen.blit(round_surface,
+                            ((Config.WINDOW_WIDTH - round_surface.get_width()) // 2, y_offset))
+        
+        # FPS (top-right corner for single player, or below P2 for two-player)
         fps_text = f"FPS: {int(game_state.fps)}"
-        text_surface = self.small_font.render(fps_text, True, (100, 100, 100))
-        self.screen.blit(text_surface, 
-                        (Config.WINDOW_WIDTH - 100, 10))
+        fps_surface = self.small_font.render(fps_text, True, (100, 100, 100))
+        if game_state.num_players == 1:
+            self.screen.blit(fps_surface, (Config.WINDOW_WIDTH - 100, 10))
+        else:
+            self.screen.blit(fps_surface, (Config.WINDOW_WIDTH - 100, 60))
     
     def _world_to_screen(self, world_pos):
         """
@@ -158,3 +183,10 @@ class Renderer:
         screen_x = world_pos[0] + Config.WINDOW_WIDTH / 2
         screen_y = Config.WINDOW_HEIGHT / 2 - world_pos[1]
         return (int(screen_x), int(screen_y))
+    
+    def render_text_centered(self, text, y_position, color=(255, 255, 255), small=False):
+        """Render text centered horizontally at given y position"""
+        font = self.small_font if small else self.font
+        text_surface = font.render(text, True, color)
+        x_position = (Config.WINDOW_WIDTH - text_surface.get_width()) // 2
+        self.screen.blit(text_surface, (x_position, y_position))
