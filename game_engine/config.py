@@ -28,13 +28,17 @@ class Config:
     TRAIL_COLOR_P1 = (0, 150, 200)  # Darker cyan
     TRAIL_COLOR_P2 = (200, 80, 0)  # Darker orange
     
-    # === Game Objects ===
+    # === Game Settings ===
     NUM_STARS = 5
     NUM_MINES = 8
     STAR_SIZE = 15
     MINE_SIZE = 12
     STAR_COLOR = (255, 255, 100)  # Yellow
     MINE_COLOR = (255, 50, 50)  # Red
+
+    # Two-player settings
+    BEST_OF_ROUNDS = 3  # Best of 3 rounds
+    RESPAWN_DELAY = 1.0  # Seconds before new round starts (future feature)
     
     # === Boost Settings ===
     BOOST_DURATION = 2.0  # seconds
@@ -45,6 +49,7 @@ class Config:
     SERIAL_PORT = '/dev/ttyUSB0'  # Change to 'COM3' on Windows
     BAUD_RATE = 115200
     SIMULATION_MODE = True  # Set to False when hardware is connected
+    SHOW_HAPTIC_PANEL = True  # Set to False to hide haptic visualization panels
     
     # === Force Parameters ===
     # Damping increases with speed

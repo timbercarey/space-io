@@ -69,6 +69,9 @@ class GameLoop:
                         if not self.game_state.start_new_round():
                             # Match is over, full reset
                             self.game_state.reset()
+                elif event.key == pygame.K_h:
+                    # Toggle haptic visualization
+                    Config.SHOW_HAPTIC_PANEL = not Config.SHOW_HAPTIC_PANEL
     
     def _update(self, dt):
         """Update game state"""
@@ -241,7 +244,7 @@ class GameLoop:
             self.controller.send_forces(p1_steer, p1_throttle, p2_steer, p2_throttle)
         
         # Render haptic visualization
-        if self.force_visualizer:
+        if self.force_visualizer and Config.SHOW_HAPTIC_PANEL:
             self.force_visualizer.render(self.force_calculator, self.controller, self.game_state)
         
         # Show pause message if paused
