@@ -17,26 +17,33 @@ class Config:
     DRAG_COEFFICIENT = 0.5  # Linear drag
     
     # === Ship Settings ===
-    SHIP_SIZE = 20  # pixels (radius)
+    SHIP_SIZE = 15  # pixels (radius)
     SHIP_COLOR_P1 = (0, 200, 255)  # Cyan
     SHIP_COLOR_P2 = (255, 100, 0)  # Orange
     
     # === Trail Settings ===
-    TRAIL_LENGTH = 100  # number of segments
+    TRAIL_LENGTH = 65  # number of segments
     TRAIL_WIDTH = 3  # pixels
     TRAIL_SEGMENT_SPACING = 5  # pixels between trail points
     TRAIL_COLOR_P1 = (0, 150, 200)  # Darker cyan
     TRAIL_COLOR_P2 = (200, 80, 0)  # Darker orange
     
     # === Game Settings ===
-    NUM_STARS = 5
-    NUM_MINES = 8
-    STAR_SIZE = 15
-    MINE_SIZE = 12
+    NUM_STARS = 8
+    NUM_MINES = 10
+    STAR_SIZE = 10
+    MINE_SIZE = 10
     STAR_COLOR = (255, 255, 100)  # Yellow
     MINE_COLOR = (255, 50, 50)  # Red
 
-    # Two-player settings
+    # === Spawn Settings ===
+    SPAWN_SAFE_ZONE_MARGIN = 50  # Pixels of safe zone around starting positions
+    SPAWN_SAFE_ZONE_ENABLED = True  # Enable/disable safe zone
+
+    # === Debug Settings ===
+    SHOW_HITBOXES = False  # Show ship collision circles
+
+    # === Two-player Settings ===
     BEST_OF_ROUNDS = 3  # Best of 3 rounds
     RESPAWN_DELAY = 1.0  # Seconds before new round starts (future feature)
     

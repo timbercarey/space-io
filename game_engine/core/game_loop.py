@@ -72,6 +72,9 @@ class GameLoop:
                 elif event.key == pygame.K_h:
                     # Toggle haptic visualization
                     Config.SHOW_HAPTIC_PANEL = not Config.SHOW_HAPTIC_PANEL
+                elif event.key == pygame.K_b:
+                    # Toggle hitbox display
+                    Config.SHOW_HITBOXES = not Config.SHOW_HITBOXES
     
     def _update(self, dt):
         """Update game state"""
@@ -230,6 +233,9 @@ class GameLoop:
         # Render ships
         for ship in self.game_state.ships.values():
             self.renderer.render_spaceship(ship)
+
+        # Render safe zone
+        # self.renderer.render_safe_zone_debug()  # Uncomment to see safe zone
         
         # Render HUD
         self.renderer.render_hud(self.game_state)

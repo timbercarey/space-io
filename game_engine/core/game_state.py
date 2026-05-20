@@ -51,21 +51,82 @@ class GameState:
         self.countdown_timer = 0.0
         self.countdown_duration = 3.0  # 3 second countdown
     
-    def _spawn_stars(self):
-        """Spawn stars at random positions"""
-        stars = []
-        for _ in range(Config.NUM_STARS):
-            pos = self._random_position(margin=100)
-            stars.append(Star(pos))
-        return stars
-    
     def _spawn_mines(self):
-        """Spawn mines at random positions"""
+        """Spawn mines at random positions, avoiding spawn area"""
         mines = []
+        
+        if not Config.SPAWN_SAFE_ZONE_ENABLED:
+            # Safe zone disabled, spawn anywhere
+            for _ in range(Config.NUM_MINES):
+                mines.append(Mine(self._random_position(margin=100)))
+            return mines
+        
+        # Define safe zone (rectangle around both starting positions)
+        # P1 starts at (-200, 0), P2 starts at (200, 0)
+        safe_zone_margin = Config.SPAWN_SAFE_ZONE_MARGIN
+        safe_zone = {
+            'min_x': -200 - safe_zone_margin,
+            'max_x': 200 + safe_zone_margin,
+            'min_y': -safe_zone_margin,
+            'max_y': safe_zone_margin
+        }
+        
         for _ in range(Config.NUM_MINES):
-            pos = self._random_position(margin=100)
-            mines.append(Mine(pos))
+            # Keep trying until we get a position outside the safe zone
+            max_attempts = 100
+            for attempt in range(max_attempts):
+                pos = self._random_position(margin=100)
+                
+                # Check if position is outside safe zone
+                if (pos.x < safe_zone['min_x'] or pos.x > safe_zone['max_x'] or
+                    pos.y < safe_zone['min_y'] or pos.y > safe_zone['max_y']):
+                    # Position is safe, use it
+                    mines.append(Mine(pos))
+                    break
+            else:
+                # If we couldn't find a safe position after max attempts,
+                # just place it anywhere (shouldn't happen with reasonable settings)
+                mines.append(Mine(self._random_position(margin=100)))
+        
         return mines
+
+    def _spawn_stars(self):
+        """Spawn stars at random positions, avoiding spawn area"""
+        stars = []
+        
+        if not Config.SPAWN_SAFE_ZONE_ENABLED:
+            # Safe zone disabled, spawn anywhere
+            for _ in range(Config.NUM_STARS):
+                stars.append(Star(self._random_position(margin=100)))
+            return stars
+        
+        # Define safe zone (rectangle around both starting positions)
+        safe_zone_margin = Config.SPAWN_SAFE_ZONE_MARGIN
+        safe_zone = {
+            'min_x': -200 - safe_zone_margin,
+            'max_x': 200 + safe_zone_margin,
+            'min_y': -safe_zone_margin,
+            'max_y': safe_zone_margin
+        }
+        
+        for _ in range(Config.NUM_STARS):
+            # Keep trying until we get a position outside the safe zone
+            max_attempts = 100
+            for attempt in range(max_attempts):
+                pos = self._random_position(margin=100)
+                
+                # Check if position is outside safe zone
+                if (pos.x < safe_zone['min_x'] or pos.x > safe_zone['max_x'] or
+                    pos.y < safe_zone['min_y'] or pos.y > safe_zone['max_y']):
+                    # Position is safe, use it
+                    stars.append(Star(pos))
+                    break
+            else:
+                # If we couldn't find a safe position after max attempts,
+                # just place it anywhere (shouldn't happen with reasonable settings)
+                stars.append(Star(self._random_position(margin=100)))
+        
+        return stars
     
     def _random_position(self, margin=0):
         """Generate random position within play area"""

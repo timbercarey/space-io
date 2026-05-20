@@ -34,7 +34,13 @@ class Renderer:
         if ship.boost_active:
             center = self._world_to_screen(ship.position.to_tuple())
             pygame.draw.circle(self.screen, (255, 255, 255), center, 
-                             int(Config.SHIP_SIZE * 1.5), 2)
+                            int(Config.SHIP_SIZE * 1.5), 2)
+        
+        # Draw hitbox if enabled
+        if Config.SHOW_HITBOXES:
+            center = self._world_to_screen(ship.position.to_tuple())
+            pygame.draw.circle(self.screen, (255, 255, 255), center, 
+                            int(Config.SHIP_SIZE), 1)
     
     def render_trail(self, ship):
         """Render ship trail (may be multiple disconnected segments)"""
@@ -190,3 +196,24 @@ class Renderer:
         text_surface = font.render(text, True, color)
         x_position = (Config.WINDOW_WIDTH - text_surface.get_width()) // 2
         self.screen.blit(text_surface, (x_position, y_position))
+
+    def render_safe_zone_debug(self):
+        """Render safe zone outline for debugging"""
+        if not Config.SPAWN_SAFE_ZONE_ENABLED:
+            return
+        
+        margin = Config.SPAWN_SAFE_ZONE_MARGIN
+        
+        # Calculate safe zone corners in world coordinates
+        corners = [
+            (-200 - margin, -margin),
+            (200 + margin, -margin),
+            (200 + margin, margin),
+            (-200 - margin, margin)
+        ]
+        
+        # Convert to screen coordinates
+        screen_corners = [self._world_to_screen(corner) for corner in corners]
+        
+        # Draw outline
+        pygame.draw.lines(self.screen, (100, 100, 100), True, screen_corners, 2)

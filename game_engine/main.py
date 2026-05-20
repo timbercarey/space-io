@@ -66,7 +66,9 @@ def main():
     if num_players == 2:
         print("N: Next round (when round ends)")
     print("H: Toggle haptic visualization")
+    print("B: Toggle hitbox display")
     print("\nHaptic visualization: " + ("ON" if Config.SHOW_HAPTIC_PANEL else "OFF"))
+    print("Hitbox display: " + ("ON" if Config.SHOW_HITBOXES else "OFF"))
     print("=" * 50)
     
     game_loop.run()
