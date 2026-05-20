@@ -5,16 +5,20 @@ import pygame
 from config import Config
 
 class GameLoop:
-    def __init__(self, game_state, controller, renderer):
+    def __init__(self, game_state, controller, renderer, force_calculator=None, force_visualizer=None):
         """
         Args:
             game_state: GameState instance
             controller: Controller instance
             renderer: Renderer instance
+            force_calculator: ForceCalculator instance (optional)
+            force_visualizer: ForceVisualizer instance (optional)
         """
         self.game_state = game_state
         self.controller = controller
         self.renderer = renderer
+        self.force_calculator = force_calculator
+        self.force_visualizer = force_visualizer
         self.clock = pygame.time.Clock()
     
     def run(self):
@@ -36,6 +40,10 @@ class GameLoop:
                 
                 # Check collisions
                 self._check_collisions()
+                
+                # Update haptics
+                if self.force_calculator:
+                    self.force_calculator.update(dt)
             
             # Render
             self._render()
@@ -84,18 +92,53 @@ class GameLoop:
                 if mine.check_collision(ship.position, Config.SHIP_SIZE):
                     ship.kill()
                     self.game_state.game_over = True
+                    
+                    # Trigger haptic effect
+                    if self.force_calculator:
+                        self.force_calculator.trigger_mine_hit(player_id)
             
             # Check trail collisions (with own trail for now)
             # Get all trail points
             all_trail_points = ship.get_all_trail_points()
             
             # Check if ship hits its own trail (not the most recent segments)
+            trail_collision = False
             if len(all_trail_points) > 10:
                 for trail_point in all_trail_points[:-10]:
                     if ship.position.distance_to(trail_point) < Config.SHIP_SIZE:
                         ship.kill()
                         self.game_state.game_over = True
+                        trail_collision = True
+                        
+                        # Trigger haptic effect
+                        if self.force_calculator:
+                            self.force_calculator.trigger_mine_hit(player_id)
                         break
+            
+            # Update trail vibration effect based on proximity to trails
+            if self.force_calculator:
+                near_trail = self._check_near_trail(ship, all_trail_points)
+                if near_trail and not trail_collision:
+                    self.force_calculator.trigger_trail_collision(player_id)
+                else:
+                    self.force_calculator.clear_trail_collision(player_id)
+    
+    def _check_near_trail(self, ship, trail_points):
+        """
+        Check if ship is near (but not colliding with) trail
+        Used for warning vibration
+        
+        Returns:
+            bool: True if near trail
+        """
+        warning_distance = Config.SHIP_SIZE * 2.5
+        
+        if len(trail_points) > 10:
+            for trail_point in trail_points[:-10]:
+                distance = ship.position.distance_to(trail_point)
+                if Config.SHIP_SIZE < distance < warning_distance:
+                    return True
+        return False
     
     def _render(self):
         """Render everything"""
@@ -119,6 +162,10 @@ class GameLoop:
         
         # Render HUD
         self.renderer.render_hud(self.game_state)
+        
+        # Render haptic visualization
+        if self.force_visualizer:
+            self.force_visualizer.render(self.force_calculator, self.controller, self.game_state)
         
         # Show pause message if paused
         if self.game_state.paused:

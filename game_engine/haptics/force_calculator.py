@@ -1,0 +1,167 @@
+"""
+Calculate haptic forces based on game state
+"""
+import math
+from config import Config
+from .effects import HapticEffect, HapticEffectManager
+
+class ForceCalculator:
+    """Calculates haptic forces for motors"""
+    
+    def __init__(self):
+        # Effect managers for each player
+        self.effect_managers = {
+            1: HapticEffectManager(1),
+            2: HapticEffectManager(2)
+        }
+        
+        # Timers for time-based effects
+        self.vibration_phase = {1: 0.0, 2: 0.0}
+    
+    def update(self, dt):
+        """Update effect timers"""
+        for manager in self.effect_managers.values():
+            manager.update(dt)
+        
+        # Update vibration phase for oscillation
+        for player_id in self.vibration_phase:
+            self.vibration_phase[player_id] += dt
+    
+    def calculate_forces(self, game_state, player_id):
+        """
+        Calculate steering and throttle forces for a player
+        
+        Args:
+            game_state: Current game state
+            player_id: 1 or 2
+        
+        Returns:
+            tuple: (steering_force, throttle_force) in range -1000 to 1000
+        """
+        if player_id not in game_state.ships:
+            return (0.0, 0.0)
+        
+        ship = game_state.ships[player_id]
+        
+        if not ship.alive:
+            return (0.0, 0.0)
+        
+        manager = self.effect_managers[player_id]
+        
+        # Start with base forces
+        steering_force = 0.0
+        throttle_force = 0.0
+        
+        # 1. Speed-dependent damping (always active)
+        steering_damping = self._calculate_speed_damping(ship)
+        steering_force += steering_damping
+        
+        # 2. Trail vibration
+        if manager.has_effect(HapticEffect.TRAIL_VIBRATION):
+            vibration = self._calculate_trail_vibration(player_id)
+            steering_force += vibration
+        
+        # 3. Mine kickback
+        if manager.has_effect(HapticEffect.MINE_KICKBACK):
+            kickback = self._calculate_mine_kickback()
+            throttle_force += kickback
+        
+        # 4. Boost virtual wall on throttle
+        if ship.boost_active:
+            wall_force = self._calculate_boost_wall()
+            throttle_force += wall_force
+        
+        # Clamp forces to valid range
+        steering_force = max(-1000, min(1000, steering_force))
+        throttle_force = max(-1000, min(1000, throttle_force))
+        
+        return (steering_force, throttle_force)
+    
+    def _calculate_speed_damping(self, ship):
+        """
+        Calculate speed-dependent damping for steering
+        Higher speed = more damping (harder to turn)
+        
+        Returns:
+            float: Damping force (0 to MAX_DAMPING)
+        """
+        speed = ship.velocity.length()
+        
+        # No damping below threshold
+        if speed < Config.DAMPING_SPEED_THRESHOLD * 0.3:
+            return 0.0
+        
+        # Linear interpolation from MIN to MAX damping
+        damping_ratio = (speed - Config.DAMPING_SPEED_THRESHOLD * 0.3) / (Config.DAMPING_SPEED_THRESHOLD * 0.7)
+        damping_ratio = max(0.0, min(1.0, damping_ratio))
+        
+        damping = Config.MIN_DAMPING + (Config.MAX_DAMPING - Config.MIN_DAMPING) * damping_ratio
+        
+        return damping
+    
+    def _calculate_trail_vibration(self, player_id):
+        """
+        Calculate vibration force from hitting trail
+        
+        Returns:
+            float: Oscillating force
+        """
+        phase = self.vibration_phase[player_id]
+        frequency = Config.TRAIL_VIBRATION_FREQ
+        amplitude = Config.TRAIL_VIBRATION_AMPLITUDE
+        
+        # Sine wave oscillation
+        vibration = amplitude * math.sin(2 * math.pi * frequency * phase)
+        
+        return vibration
+    
+    def _calculate_mine_kickback(self):
+        """
+        Calculate kickback force from hitting mine
+        
+        Returns:
+            float: Negative force (pushes back)
+        """
+        return -Config.MINE_KICKBACK_FORCE
+    
+    def _calculate_boost_wall(self):
+        """
+        Calculate virtual wall force when boost is active
+        Creates resistance at forward throttle position
+        
+        Returns:
+            float: Wall force
+        """
+        # Virtual wall pushes back when throttle is pushed forward
+        # This creates a "detent" feel at the boost activation point
+        return Config.BOOST_WALL_STIFFNESS
+    
+    def trigger_trail_collision(self, player_id):
+        """Trigger trail collision vibration"""
+        manager = self.effect_managers[player_id]
+        
+        # Clear any existing trail vibration
+        manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+        
+        # Add new vibration effect (continuous until cleared)
+        manager.add_effect(HapticEffect.TRAIL_VIBRATION, intensity=1.0, duration=0.0)
+        
+        # Reset vibration phase for consistent feel
+        self.vibration_phase[player_id] = 0.0
+    
+    def clear_trail_collision(self, player_id):
+        """Stop trail collision vibration"""
+        manager = self.effect_managers[player_id]
+        manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+    
+    def trigger_mine_hit(self, player_id):
+        """Trigger mine kickback effect"""
+        manager = self.effect_managers[player_id]
+        manager.add_effect(HapticEffect.MINE_KICKBACK, intensity=1.0, 
+                          duration=Config.MINE_KICKBACK_DURATION)
+    
+    def get_active_effects(self, player_id):
+        """Get list of active effects for a player"""
+        if player_id not in self.effect_managers:
+            return []
+        return self.effect_managers[player_id].get_effects()

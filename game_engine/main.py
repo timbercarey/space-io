@@ -7,6 +7,7 @@ from config import Config
 from core import GameState, GameLoop
 from input import KeyboardController
 from graphics import Renderer
+from haptics import ForceCalculator, ForceVisualizer
 
 def main():
     """Main entry point"""
@@ -35,8 +36,13 @@ def main():
     controller = KeyboardController()
     renderer = Renderer(screen)
     
+    # Initialize haptics (simulation mode)
+    force_calculator = ForceCalculator()
+    force_visualizer = ForceVisualizer(screen)
+    
     # Create and run game loop
-    game_loop = GameLoop(game_state, controller, renderer)
+    game_loop = GameLoop(game_state, controller, renderer, 
+                         force_calculator, force_visualizer)
     
     print("=" * 50)
     print("SPACE IO - Controls")
@@ -47,6 +53,7 @@ def main():
     print("\nESC: Quit")
     print("SPACE: Pause")
     print("R: Restart")
+    print("\nHaptic visualization enabled (bottom left)")
     print("=" * 50)
     
     game_loop.run()
