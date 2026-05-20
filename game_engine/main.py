@@ -5,7 +5,7 @@ import sys
 import pygame
 from config import Config
 from core import GameState, GameLoop
-from input import KeyboardController
+from input import KeyboardController, HapticController
 from graphics import Renderer
 from haptics import ForceCalculator, ForceVisualizer
 
@@ -33,10 +33,17 @@ def main():
     
     # Initialize components
     game_state = GameState(num_players=num_players)
-    controller = KeyboardController()
     renderer = Renderer(screen)
     
-    # Initialize haptics (simulation mode)
+    # Choose controller based on simulation mode
+    if Config.SIMULATION_MODE:
+        print("Running in SIMULATION MODE (keyboard input)")
+        controller = KeyboardController()
+    else:
+        print("Running in HARDWARE MODE (haptic input)")
+        controller = HapticController()
+    
+    # Initialize haptics
     force_calculator = ForceCalculator()
     force_visualizer = ForceVisualizer(screen)
     
@@ -47,9 +54,12 @@ def main():
     print("=" * 50)
     print("SPACE IO - Controls")
     print("=" * 50)
-    print("Player 1: W/A/S/D (throttle/steer)")
-    if num_players == 2:
-        print("Player 2: Arrow Keys")
+    if Config.SIMULATION_MODE:
+        print("Player 1: W/A/S/D (throttle/steer)")
+        if num_players == 2:
+            print("Player 2: Arrow Keys")
+    else:
+        print("Using haptic hardware for input")
     print("\nESC: Quit")
     print("SPACE: Pause")
     print("R: Restart")
