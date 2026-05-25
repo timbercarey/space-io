@@ -49,10 +49,14 @@ Command values:
 - `131..255`: one motor direction
 - `0..123`: opposite motor direction
 
+On the current hardware, channel 1 drives throttle and channel 2 drives
+steering. The Teensy controller swaps the game force order before sending the
+packet, so `F,STEER,THROTTLE,0,0` still behaves naturally from the laptop side.
+
 The firmware writes directly to Timer0 PWM registers:
 
-- Steering motor, pin 5: `OCR0B`
-- Throttle motor, pin 6: `OCR0A`
+- Channel 1, pin 5: `OCR0B`
+- Channel 2, pin 6: `OCR0A`
 
 Timer0 is configured for phase-correct PWM with prescaler `1`, giving about
 `31.4 kHz` PWM on pins 5 and 6.

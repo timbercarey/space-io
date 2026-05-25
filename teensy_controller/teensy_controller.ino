@@ -139,11 +139,15 @@ void processLaptopMessage(char* message) {
 void sendForcesToHapkit(int steeringForce, int throttleForce) {
   byte steeringCommand = forceToHapkitCommand(steeringForce);
   byte throttleCommand = forceToHapkitCommand(throttleForce);
-  byte checksum = (byte)(steeringCommand + throttleCommand);
+
+  // Hapkit channel 1 is physically wired to throttle, channel 2 to steering.
+  byte hapkitChannel1Command = throttleCommand;
+  byte hapkitChannel2Command = steeringCommand;
+  byte checksum = (byte)(hapkitChannel1Command + hapkitChannel2Command);
 
   HAPKIT_SERIAL.write((byte)0xAA);
-  HAPKIT_SERIAL.write(steeringCommand);
-  HAPKIT_SERIAL.write(throttleCommand);
+  HAPKIT_SERIAL.write(hapkitChannel1Command);
+  HAPKIT_SERIAL.write(hapkitChannel2Command);
   HAPKIT_SERIAL.write(checksum);
 }
 

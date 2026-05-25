@@ -37,6 +37,9 @@ The current motor command packet is binary:
 `127` is centered. The Hapkit receiver treats `124..130` as a stop deadband,
 `131..255` as one direction, and `0..123` as the other direction.
 
+On the current hardware, Hapkit channel 1 drives throttle and channel 2 drives
+steering, so the Teensy swaps the game force order before sending the packet.
+
 ## Upload Instructions
 
 1. Install the Teensy `QuadEncoder` library if it is not already available.
