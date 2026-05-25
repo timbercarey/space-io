@@ -4,7 +4,7 @@
  */
 
 #define MOTOR_PIN 5
-#define DIR_PIN 4
+#define DIR_PIN 8
 
 void setup() {
   pinMode(MOTOR_PIN, OUTPUT);

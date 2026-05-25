@@ -1,119 +1,80 @@
-# Hapkit Controller
+# Hapkit Motor Receiver
 
-Motor control and encoder reading for Space IO haptic feedback.
+Receives motor command packets from the Teensy and drives the two Hapkit motors.
+Encoder reading now happens on the Teensy 4.1 controller.
+
+This firmware is based on the verified Hapkit receiver test sketch that drove
+the motors from Teensy packets.
 
 ## Hardware Setup
 
 ### Motor Connections
-Each Hapkit board controls 2 motors (steering and throttle).
 
-**Steering Motor (Motor 1):**
-- Motor+ → Motor Driver Output 1A
-- Motor- → Motor Driver Output 1B
-- PWM Control → Pin 5
-- Direction → Pin 4
+Each Hapkit board controls two motors.
 
-**Throttle Motor (Motor 2):**
-- Motor+ → Motor Driver Output 2A
-- Motor- → Motor Driver Output 2B
-- PWM Control → Pin 6
-- Direction → Pin 7
+**Steering Motor**
 
-### Encoder Connections
+- PWM control -> Pin 5
+- Direction -> Pin 8
 
-**Steering Encoder:**
-- Channel A → Pin 2 (interrupt capable)
-- Channel B → Pin 3 (interrupt capable)
-- VCC → 5V
-- GND → GND
+**Throttle Motor**
 
-**Throttle Encoder:**
-- Channel A → Pin 18 (interrupt capable)
-- Channel B → Pin 19 (interrupt capable)
-- VCC → 5V
-- GND → GND
+- PWM control -> Pin 6
+- Direction -> Pin 7
 
-### Serial Connection to Teensy
-- Hapkit TX → Teensy RX (Serial1 or Serial2)
-- Hapkit RX → Teensy TX (Serial1 or Serial2)
-- Hapkit GND → Teensy GND
+### Serial Connection From Teensy
 
-## Configuration
-
-Edit `config.h` to match your hardware:
-
-1. **Pin assignments** - Adjust if using different pins
-2. **ENCODER_CPR** - Set to your encoder's counts per revolution
-3. **ENCODER_RANGE** - Physical range of motion in degrees
-4. **MAX_FORCE** - Maximum force value (should match game engine)
-
-## Upload Instructions
-
-1. Open `hapkit_controller.ino` in Arduino IDE
-2. Select Tools → Board → Arduino Uno (or your Hapkit board type)
-3. Select correct COM port
-4. Click Upload
-
-## Testing
-
-1. Open Serial Monitor (115200 baud)
-2. You should see "Hapkit Controller Ready"
-3. Manually move the motors - you should see position updates:
-P,0.000,0.000
-P,0.123,-0.045
-4. Send a force command:
-F,500,200
-Motors should respond with force feedback.
+- Teensy `Serial4` TX, pin 17 -> Hapkit serial RX
+- Teensy GND -> Hapkit GND
+- Baud rate: `115200`
 
 ## Message Protocol
 
-### Received from Teensy
-F,STEER,THROTTLE\n
-Example: `F,500,-200\n`
-- STEER: Steering force (-1000 to 1000)
-- THROTTLE: Throttle force (-1000 to 1000)
+The Hapkit board receives binary packets:
 
-### Sent to Teensy
-P,STEER,THROTTLE\n
-Example: `P,0.500,-0.300\n`
-- STEER: Steering position (-1.0 to 1.0)
-- THROTTLE: Throttle position (-1.0 to 1.0)
+```text
+0xAA,STEERING_BYTE,THROTTLE_BYTE,CHECKSUM
+```
 
-## Calibration
+The checksum is:
 
-### Finding Encoder Center Position
+```text
+(STEERING_BYTE + THROTTLE_BYTE) mod 256
+```
 
-1. Manually position both motors at their mechanical center
-2. Upload the code
-3. Open Serial Monitor
-4. Note the position values being sent
-5. Update `POSITION_CENTER` in `config.h` to match these values
-6. Re-upload
+Command values:
 
-### Tuning Force Response
+- `127`: stop
+- `124..130`: deadband / stop
+- `131..255`: one motor direction
+- `0..123`: opposite motor direction
 
-If motors are too strong or too weak:
-1. Adjust `MAX_PWM` in `config.h` (lower = weaker, max 255)
-2. Or modify the game engine force values in `config.py`
+The firmware writes directly to Timer0 PWM registers:
 
-## Troubleshooting
+- Steering motor, pin 5: `OCR0B`
+- Throttle motor, pin 6: `OCR0A`
 
-**Motors don't move:**
-- Check motor driver connections
-- Verify PWM pins are correct
-- Check power supply to motors
+Timer0 is configured for phase-correct PWM with prescaler `1`, giving about
+`31.4 kHz` PWM on pins 5 and 6.
 
-**Encoders not working:**
-- Verify encoder pins are interrupt-capable
-- Check encoder power (5V)
-- Test with simple encoder reading sketch
+## Upload Instructions
 
-**Choppy/jittery force:**
-- Check serial baud rate (must be 115200)
-- Verify control loop is running at ~1000 Hz
-- Check for serial buffer overruns
+1. Open `hapkit_controller.ino` in Arduino IDE.
+2. Select the Hapkit board target.
+3. Select the correct serial port.
+4. Click Upload.
 
-**Position drift:**
-- Encoder may be missing counts
-- Try using hardware interrupts for encoder reading
-- Check encoder wiring
+## Testing
+
+Use `test_motors/test_motors.ino` first to verify PWM and direction pins. Then
+upload `hapkit_controller.ino` and send a binary packet from the Teensy.
+
+Start with low force values from the game or Teensy controller and verify motor signs:
+
+- Positive steering force should push in the expected steering direction.
+- Negative steering force should push the opposite direction.
+- Positive throttle force should push in the expected throttle direction.
+- Negative throttle force should push the opposite direction.
+
+If a motor pushes the wrong way, swap its motor leads or invert the direction
+mapping in firmware before increasing gains.

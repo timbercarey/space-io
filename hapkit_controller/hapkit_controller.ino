@@ -1,127 +1,106 @@
 /*
- * Space IO - Hapkit Controller
- * 
- * Controls two motors (steering and throttle) with force feedback
- * Reads encoders and sends positions to Teensy
- * Receives force commands from Teensy and renders them
- * 
- * Hardware:
- *   - 2x Maxon motors with encoders
- *   - Motor driver (on Hapkit board)
- *   - Encoder connections
+ * Space IO - Hapkit Motor Receiver
+ *
+ * Receives binary motor command packets from the Teensy controller and drives
+ * two Hapkit motors using the verified Timer0 PWM setup.
+ *
+ * Packet format:
+ *   0xAA,STEERING_BYTE,THROTTLE_BYTE,CHECKSUM
  */
 
 #include "config.h"
-#include "motor_control.h"
-#include "encoder.h"
 
-// Motor objects
-MotorController steeringMotor(STEERING_MOTOR_PIN, STEERING_DIR_PIN);
-MotorController throttleMotor(THROTTLE_MOTOR_PIN, THROTTLE_DIR_PIN);
+enum PacketState {
+  WAIT_FOR_HEADER,
+  READ_STEERING,
+  READ_THROTTLE,
+  READ_CHECKSUM
+};
 
-// Encoder objects
-EncoderReader steeringEncoder(STEERING_ENCODER_A, STEERING_ENCODER_B);
-EncoderReader throttleEncoder(THROTTLE_ENCODER_A, THROTTLE_ENCODER_B);
-
-// Serial communication
-char serialBuffer[128];
-int serialBufferIndex = 0;
-
-// Target forces (from game engine)
-float steeringForce = 0.0;  // -1000 to 1000
-float throttleForce = 0.0;  // -1000 to 1000
-
-// Control loop timing
-unsigned long lastControlUpdate = 0;
-unsigned long lastPositionSend = 0;
+PacketState packetState = WAIT_FOR_HEADER;
+byte steeringCommand = HAPKIT_STOP_COMMAND;
+byte throttleCommand = HAPKIT_STOP_COMMAND;
 
 void setup() {
   Serial.begin(BAUD_RATE);
-  
-  // Initialize motors
-  steeringMotor.begin();
-  throttleMotor.begin();
-  
-  // Initialize encoders
-  steeringEncoder.begin();
-  throttleEncoder.begin();
-  
-  delay(500);
-  
-  Serial.println("Hapkit Controller Ready");
+
+  pinMode(STEERING_MOTOR_PIN, OUTPUT);
+  pinMode(STEERING_DIR_PIN, OUTPUT);
+  pinMode(THROTTLE_MOTOR_PIN, OUTPUT);
+  pinMode(THROTTLE_DIR_PIN, OUTPUT);
+
+  // Phase-correct PWM on Timer0, prescaler 1, about 31.4 kHz on pins 5 and 6.
+  TCCR0A = _BV(COM0A1) | _BV(COM0B1) | _BV(WGM00);
+  TCCR0B = _BV(CS00);
+
+  stopMotors();
 }
 
 void loop() {
-  unsigned long currentTime = micros();
-  
-  // High-frequency control loop (~1000 Hz)
-  if (currentTime - lastControlUpdate >= CONTROL_LOOP_INTERVAL_US) {
-    updateControlLoop();
-    lastControlUpdate = currentTime;
-  }
-  
-  // Read serial commands
-  readSerialCommands();
-  
-  // Send position updates at lower rate (~60 Hz)
-  if (currentTime - lastPositionSend >= POSITION_SEND_INTERVAL_US) {
-    sendPositions();
-    lastPositionSend = currentTime;
-  }
+  readMotorPackets();
 }
 
-void updateControlLoop() {
-  // Read encoder positions
-  steeringEncoder.update();
-  throttleEncoder.update();
-  
-  // Apply forces to motors
-  steeringMotor.setForce(steeringForce);
-  throttleMotor.setForce(throttleForce);
-}
-
-void readSerialCommands() {
+void readMotorPackets() {
   while (Serial.available() > 0) {
-    char c = Serial.read();
-    
-    if (c == '\n') {
-      serialBuffer[serialBufferIndex] = '\0';
-      processCommand(serialBuffer);
-      serialBufferIndex = 0;
-    } else if (serialBufferIndex < 127) {
-      serialBuffer[serialBufferIndex++] = c;
-    } else {
-      serialBufferIndex = 0;
+    byte value = Serial.read();
+
+    switch (packetState) {
+      case WAIT_FOR_HEADER:
+        if (value == HAPKIT_PACKET_HEADER) {
+          packetState = READ_STEERING;
+        }
+        break;
+
+      case READ_STEERING:
+        steeringCommand = value;
+        packetState = READ_THROTTLE;
+        break;
+
+      case READ_THROTTLE:
+        throttleCommand = value;
+        packetState = READ_CHECKSUM;
+        break;
+
+      case READ_CHECKSUM:
+        if (value == calculateChecksum(steeringCommand, throttleCommand)) {
+          driveSteeringMotor(steeringCommand);
+          driveThrottleMotor(throttleCommand);
+        }
+        packetState = WAIT_FOR_HEADER;
+        break;
     }
   }
 }
 
-void processCommand(char* command) {
-  // Expected format: F,STEER,THROTTLE
-  // Example: F,500,-200
-  
-  if (command[0] != 'F') {
-    return;
-  }
-  
-  float steer, throttle;
-  int parsed = sscanf(command, "F,%f,%f", &steer, &throttle);
-  
-  if (parsed == 2) {
-    steeringForce = constrain(steer, -1000.0, 1000.0);
-    throttleForce = constrain(throttle, -1000.0, 1000.0);
+byte calculateChecksum(byte steering, byte throttle) {
+  return (byte)(steering + throttle);
+}
+
+void stopMotors() {
+  OCR0B = 0;
+  OCR0A = 0;
+}
+
+void driveSteeringMotor(byte rawValue) {
+  if (rawValue > HAPKIT_DEADBAND_HIGH) {
+    digitalWrite(STEERING_DIR_PIN, HIGH);
+    OCR0B = map(rawValue, HAPKIT_FORWARD_START, HAPKIT_MAX_FORWARD_COMMAND, 0, MAX_PWM);
+  } else if (rawValue < HAPKIT_DEADBAND_LOW) {
+    digitalWrite(STEERING_DIR_PIN, LOW);
+    OCR0B = map(rawValue, HAPKIT_REVERSE_START, HAPKIT_MAX_REVERSE_COMMAND, 0, MAX_PWM);
+  } else {
+    OCR0B = 0;
   }
 }
 
-void sendPositions() {
-  // Get normalized positions (-1.0 to 1.0)
-  float steerPos = steeringEncoder.getNormalizedPosition();
-  float throttlePos = throttleEncoder.getNormalizedPosition();
-  
-  // Send to Teensy
-  // Format: P,STEER,THROTTLE
-  Serial.print("P,");
-  Serial.print(steerPos, 3);
-  Serial.print(",");
-  Serial.println(throttlePos, 3);
+void driveThrottleMotor(byte rawValue) {
+  if (rawValue > HAPKIT_DEADBAND_HIGH) {
+    digitalWrite(THROTTLE_DIR_PIN, HIGH);
+    OCR0A = map(rawValue, HAPKIT_FORWARD_START, HAPKIT_MAX_FORWARD_COMMAND, 0, MAX_PWM);
+  } else if (rawValue < HAPKIT_DEADBAND_LOW) {
+    digitalWrite(THROTTLE_DIR_PIN, LOW);
+    OCR0A = map(rawValue, HAPKIT_REVERSE_START, HAPKIT_MAX_REVERSE_COMMAND, 0, MAX_PWM);
+  } else {
+    OCR0A = 0;
+  }
 }
