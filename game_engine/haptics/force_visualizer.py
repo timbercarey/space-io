@@ -63,7 +63,11 @@ class ForceVisualizer:
         current_y = y + 35
         
         # Get forces
-        steering_force, throttle_force = force_calculator.calculate_forces(game_state, player_id)
+        steering_force, throttle_force = force_calculator.calculate_forces(
+            game_state,
+            player_id,
+            controller
+        )
         
         # Get controller inputs
         steering_input = controller.get_steering(player_id)
@@ -186,7 +190,6 @@ class ForceVisualizer:
             HapticEffect.NONE: "None",
             HapticEffect.TRAIL_VIBRATION: "Trail Vibration",
             HapticEffect.MINE_KICKBACK: "Mine Kickback",
-            HapticEffect.BOOST_WALL: "Boost Wall",
             HapticEffect.SPEED_DAMPING: "Speed Damping"
         }
         return names.get(effect, "Unknown")

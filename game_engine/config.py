@@ -57,12 +57,31 @@ class Config:
     BAUD_RATE = 115200
     SIMULATION_MODE = True  # Set to False when hardware is connected
     SHOW_HAPTIC_PANEL = True  # Set to False to hide haptic visualization panels
+
+    # === Encoder Settings ===
+    ENCODER_COUNTS_PER_ROTATION = 4000
+    CONTROL_ROTATION_RANGE = 1.0  # +/- rotations maps to normalized +/-1.0
     
     # === Force Parameters ===
     # Damping increases with speed
     MIN_DAMPING = 0.0
     MAX_DAMPING = 500.0
     DAMPING_SPEED_THRESHOLD = MAX_SPEED * 0.8
+
+    # Throttle damping is always active and grows logarithmically with speed
+    MIN_THROTTLE_DAMPING = 50.0
+    MAX_THROTTLE_DAMPING = 450.0
+    THROTTLE_DAMPING_LOG_GAIN = 9.0
+
+    # Passive centering springs pull each axis back toward zero position
+    STEERING_CENTERING_STIFFNESS = 300.0
+    THROTTLE_CENTERING_STIFFNESS = 300.0
+
+    # Virtual walls limit centered knob motion
+    STEERING_MOTION_RANGE_DEG = 270.0
+    THROTTLE_MOTION_RANGE_DEG = 90.0
+    BOOST_THROTTLE_FORWARD_EXTENSION_DEG = 30.0
+    VIRTUAL_WALL_STIFFNESS = 2500.0
     
     # Trail collision vibration
     TRAIL_VIBRATION_FREQ = 50  # Hz
@@ -71,10 +90,6 @@ class Config:
     # Mine collision
     MINE_KICKBACK_FORCE = 800
     MINE_KICKBACK_DURATION = 0.2  # seconds
-    
-    # Boost activation
-    BOOST_WALL_STIFFNESS = 500
-    BOOST_WALL_POSITION = 0.8  # Normalized (0 to 1)
     
     # === Input Settings ===
     # Keyboard controls for simulation

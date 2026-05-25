@@ -5,9 +5,9 @@
  * 
  * Message Format:
  *   FROM LAPTOP: F,P1S,P1T,P2S,P2T\n
- *   TO LAPTOP:   P,P1S,P1T,P2S,P2T\n
+ *   TO LAPTOP:   P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS\n
  *   
- * Where values are integers (-1000 to 1000 for forces, normalized floats for positions)
+ * Where force values are integers (-1000 to 1000) and encoder positions are raw counts
  */
 
 // Serial port assignments
@@ -28,11 +28,11 @@ int laptopBufferIndex = 0;
 int hapkit1BufferIndex = 0;
 int hapkit2BufferIndex = 0;
 
-// Latest position data from each hapkit
-float p1_steering = 0.0;
-float p1_throttle = 0.0;
-float p2_steering = 0.0;
-float p2_throttle = 0.0;
+// Latest raw encoder counts from each controller
+long p1_steering = 0;
+long p1_throttle = 0;
+long p2_steering = 0;
+long p2_throttle = 0;
 
 // Timing
 unsigned long lastPositionSend = 0;
@@ -131,19 +131,19 @@ void readFromHapkit1() {
 }
 
 void processHapkit1Message(char* message) {
-  // Expected format: P,STEER,THROTTLE
-  // Example: P,0.5,-0.3
+  // Expected format: P,STEER_COUNTS,THROTTLE_COUNTS
+  // Example: P,2000,-1200
   
   if (message[0] != 'P') {
     return; // Not a position message
   }
   
-  float steer, throttle;
-  int parsed = sscanf(message, "P,%f,%f", &steer, &throttle);
+  long steer, throttle;
+  int parsed = sscanf(message, "P,%ld,%ld", &steer, &throttle);
   
   if (parsed == 2) {
-    p1_steering = constrain(steer, -1.0, 1.0);
-    p1_throttle = constrain(throttle, -1.0, 1.0);
+    p1_steering = steer;
+    p1_throttle = throttle;
   }
 }
 
@@ -166,30 +166,30 @@ void readFromHapkit2() {
 }
 
 void processHapkit2Message(char* message) {
-  // Expected format: P,STEER,THROTTLE
-  // Example: P,0.2,0.8
+  // Expected format: P,STEER_COUNTS,THROTTLE_COUNTS
+  // Example: P,-800,1600
   
   if (message[0] != 'P') {
     return; // Not a position message
   }
   
-  float steer, throttle;
-  int parsed = sscanf(message, "P,%f,%f", &steer, &throttle);
+  long steer, throttle;
+  int parsed = sscanf(message, "P,%ld,%ld", &steer, &throttle);
   
   if (parsed == 2) {
-    p2_steering = constrain(steer, -1.0, 1.0);
-    p2_throttle = constrain(throttle, -1.0, 1.0);
+    p2_steering = steer;
+    p2_throttle = throttle;
   }
 }
 
 void sendPositionsToLaptop() {
-  // Format: P,P1S,P1T,P2S,P2T
+  // Format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS
   LAPTOP_SERIAL.print("P,");
-  LAPTOP_SERIAL.print(p1_steering, 3); // 3 decimal places
+  LAPTOP_SERIAL.print(p1_steering);
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.print(p1_throttle, 3);
+  LAPTOP_SERIAL.print(p1_throttle);
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.print(p2_steering, 3);
+  LAPTOP_SERIAL.print(p2_steering);
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.println(p2_throttle, 3);
+  LAPTOP_SERIAL.println(p2_throttle);
 }

@@ -242,10 +242,18 @@ class GameLoop:
         
         # Send haptic forces to hardware
         if self.force_calculator and hasattr(self.controller, 'send_forces'):
-            p1_steer, p1_throttle = self.force_calculator.calculate_forces(self.game_state, 1)
+            p1_steer, p1_throttle = self.force_calculator.calculate_forces(
+                self.game_state,
+                1,
+                self.controller
+            )
             p2_steer, p2_throttle = 0, 0
             if 2 in self.game_state.ships:
-                p2_steer, p2_throttle = self.force_calculator.calculate_forces(self.game_state, 2)
+                p2_steer, p2_throttle = self.force_calculator.calculate_forces(
+                    self.game_state,
+                    2,
+                    self.controller
+                )
             
             self.controller.send_forces(p1_steer, p1_throttle, p2_steer, p2_throttle)
         

@@ -27,13 +27,14 @@ class ForceCalculator:
         for player_id in self.vibration_phase:
             self.vibration_phase[player_id] += dt
     
-    def calculate_forces(self, game_state, player_id):
+    def calculate_forces(self, game_state, player_id, controller=None):
         """
         Calculate steering and throttle forces for a player
         
         Args:
             game_state: Current game state
             player_id: 1 or 2
+            controller: Controller instance for reading current axis positions (optional)
         
         Returns:
             tuple: (steering_force, throttle_force) in range -1000 to 1000
@@ -52,31 +53,95 @@ class ForceCalculator:
         steering_force = 0.0
         throttle_force = 0.0
         
-        # 1. Speed-dependent damping (always active)
+        # 1. Passive centering springs (always active when controller position is available)
+        if controller:
+            steering_position = controller.get_steering(player_id)
+            throttle_position = controller.get_throttle(player_id)
+
+            steering_force += self._calculate_centering_spring(
+                steering_position,
+                Config.STEERING_CENTERING_STIFFNESS
+            )
+            throttle_force += self._calculate_centering_spring(
+                throttle_position,
+                Config.THROTTLE_CENTERING_STIFFNESS
+            )
+            steering_force += self._calculate_virtual_wall(
+                steering_position,
+                Config.STEERING_MOTION_RANGE_DEG
+            )
+            throttle_forward_extension = 0.0
+            if ship.boost_active:
+                throttle_forward_extension = Config.BOOST_THROTTLE_FORWARD_EXTENSION_DEG
+
+            throttle_force += self._calculate_virtual_wall(
+                throttle_position,
+                Config.THROTTLE_MOTION_RANGE_DEG,
+                forward_extension_deg=throttle_forward_extension
+            )
+
+        # 2. Speed-dependent damping (always active)
         steering_damping = self._calculate_speed_damping(ship)
         steering_force += steering_damping
+
+        # 3. Log-modeled throttle damping (always active)
+        throttle_damping = self._calculate_throttle_damping(ship)
+        throttle_force += throttle_damping
         
-        # 2. Trail vibration
+        # 4. Trail vibration
         if manager.has_effect(HapticEffect.TRAIL_VIBRATION):
             vibration = self._calculate_trail_vibration(player_id)
             steering_force += vibration
         
-        # 3. Mine kickback
+        # 5. Mine kickback
         if manager.has_effect(HapticEffect.MINE_KICKBACK):
             kickback = self._calculate_mine_kickback()
             throttle_force += kickback
-        
-        # 4. Boost virtual wall on throttle
-        if ship.boost_active:
-            wall_force = self._calculate_boost_wall()
-            throttle_force += wall_force
         
         # Clamp forces to valid range
         steering_force = max(-1000, min(1000, steering_force))
         throttle_force = max(-1000, min(1000, throttle_force))
         
         return (steering_force, throttle_force)
-    
+
+    def _calculate_centering_spring(self, position, stiffness):
+        """
+        Calculate passive spring force toward zero position.
+
+        Args:
+            position: Normalized axis position (-1.0 to 1.0)
+            stiffness: Force per normalized position unit
+
+        Returns:
+            float: Restoring force
+        """
+        position = max(-1.0, min(1.0, position))
+        return -position * stiffness
+
+    def _calculate_virtual_wall(self, position, motion_range_deg, forward_extension_deg=0.0):
+        """
+        Calculate a centered virtual wall for an axis.
+
+        Args:
+            position: Normalized axis position where +/-1 is CONTROL_ROTATION_RANGE rotations
+            motion_range_deg: Total allowed centered motion in degrees
+            forward_extension_deg: Extra positive-side motion in degrees
+
+        Returns:
+            float: Restoring force when outside the allowed range
+        """
+        rear_limit_deg = motion_range_deg / 2.0
+        forward_limit_deg = (motion_range_deg / 2.0) + forward_extension_deg
+        rear_limit = rear_limit_deg / (360.0 * Config.CONTROL_ROTATION_RANGE)
+        forward_limit = forward_limit_deg / (360.0 * Config.CONTROL_ROTATION_RANGE)
+
+        if position > forward_limit:
+            return -(position - forward_limit) * Config.VIRTUAL_WALL_STIFFNESS
+        if position < -rear_limit:
+            return -(position + rear_limit) * Config.VIRTUAL_WALL_STIFFNESS
+
+        return 0.0
+     
     def _calculate_speed_damping(self, ship):
         """
         Calculate speed-dependent damping for steering
@@ -98,6 +163,30 @@ class ForceCalculator:
         damping = Config.MIN_DAMPING + (Config.MAX_DAMPING - Config.MIN_DAMPING) * damping_ratio
         
         return damping
+
+    def _calculate_throttle_damping(self, ship):
+        """
+        Calculate always-on throttle damping.
+        Higher speed increases resistance logarithmically, with a light preload at rest.
+
+        Returns:
+            float: Negative damping force (-MAX_THROTTLE_DAMPING to 0)
+        """
+        speed = ship.velocity.length()
+        speed_ratio = max(0.0, min(1.0, speed / Config.MAX_SPEED))
+
+        log_gain = max(0.0, Config.THROTTLE_DAMPING_LOG_GAIN)
+        if log_gain == 0.0:
+            damping_ratio = speed_ratio
+        else:
+            damping_ratio = math.log1p(log_gain * speed_ratio) / math.log1p(log_gain)
+
+        damping = (
+            Config.MIN_THROTTLE_DAMPING
+            + (Config.MAX_THROTTLE_DAMPING - Config.MIN_THROTTLE_DAMPING) * damping_ratio
+        )
+
+        return -damping
     
     def _calculate_trail_vibration(self, player_id):
         """
@@ -123,18 +212,6 @@ class ForceCalculator:
             float: Negative force (pushes back)
         """
         return -Config.MINE_KICKBACK_FORCE
-    
-    def _calculate_boost_wall(self):
-        """
-        Calculate virtual wall force when boost is active
-        Creates resistance at forward throttle position
-        
-        Returns:
-            float: Wall force
-        """
-        # Virtual wall pushes back when throttle is pushed forward
-        # This creates a "detent" feel at the boost activation point
-        return Config.BOOST_WALL_STIFFNESS
     
     def trigger_trail_collision(self, player_id):
         """Trigger trail collision vibration"""

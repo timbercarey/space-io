@@ -26,6 +26,10 @@ class SerialComm:
             1: {'steering': 0.0, 'throttle': 0.0},
             2: {'steering': 0.0, 'throttle': 0.0}
         }
+        self.latest_encoder_counts = {
+            1: {'steering': 0, 'throttle': 0},
+            2: {'steering': 0, 'throttle': 0}
+        }
         
         if not simulation_mode:
             self._connect()
@@ -75,7 +79,7 @@ class SerialComm:
         
         Returns:
             dict: {player_id: {'steering': float, 'throttle': float}}
-                  Values are normalized -1.0 to 1.0
+                  Raw encoder counts are normalized to -1.0 to 1.0
         """
         if self.simulation_mode or not self.connected:
             return self.latest_positions
@@ -98,25 +102,30 @@ class SerialComm:
         """
         Parse position data from Teensy
         
-        Expected format: P,P1S,P1T,P2S,P2T
-        Example: P,0.5,-0.3,0.2,0.8
+        Expected format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS
+        Example: P,2000,-1200,0,0
         """
         try:
             parts = line.split(',')
             if parts[0] != 'P' or len(parts) != 5:
                 return
             
-            # Parse values
-            p1_steer = float(parts[1])
-            p1_throttle = float(parts[2])
-            p2_steer = float(parts[3])
-            p2_throttle = float(parts[4])
+            # Parse raw encoder counts
+            p1_steer_counts = int(parts[1])
+            p1_throttle_counts = int(parts[2])
+            p2_steer_counts = int(parts[3])
+            p2_throttle_counts = int(parts[4])
             
-            # Clamp to valid range
-            p1_steer = max(-1.0, min(1.0, p1_steer))
-            p1_throttle = max(-1.0, min(1.0, p1_throttle))
-            p2_steer = max(-1.0, min(1.0, p2_steer))
-            p2_throttle = max(-1.0, min(1.0, p2_throttle))
+            p1_steer = self._normalize_encoder_counts(p1_steer_counts)
+            p1_throttle = self._normalize_encoder_counts(p1_throttle_counts)
+            p2_steer = self._normalize_encoder_counts(p2_steer_counts)
+            p2_throttle = self._normalize_encoder_counts(p2_throttle_counts)
+            
+            # Update latest raw counts
+            self.latest_encoder_counts[1]['steering'] = p1_steer_counts
+            self.latest_encoder_counts[1]['throttle'] = p1_throttle_counts
+            self.latest_encoder_counts[2]['steering'] = p2_steer_counts
+            self.latest_encoder_counts[2]['throttle'] = p2_throttle_counts
             
             # Update latest positions
             self.latest_positions[1]['steering'] = p1_steer
@@ -127,6 +136,15 @@ class SerialComm:
         except (ValueError, IndexError):
             # Ignore malformed data
             pass
+
+    def _normalize_encoder_counts(self, counts):
+        """Convert raw encoder counts to normalized controller position."""
+        max_counts = Config.ENCODER_COUNTS_PER_ROTATION * Config.CONTROL_ROTATION_RANGE
+        if max_counts <= 0:
+            return 0.0
+
+        normalized = counts / max_counts
+        return max(-1.0, min(1.0, normalized))
     
     def close(self):
         """Close serial connection"""
