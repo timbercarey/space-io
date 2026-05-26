@@ -53,7 +53,7 @@ class Config:
     BOOST_COOLDOWN = 1.0  # seconds after boost ends
     
     # === Haptics Settings ===
-    SERIAL_PORT = '/dev/ttyUSB0'  # Change to 'COM3' on Windows
+    SERIAL_PORT = '/dev/cu.usbmodem199646501'  # Change to 'COM3' on Windows
     BAUD_RATE = 115200
     SIMULATION_MODE = True  # Set to False when hardware is connected
     SHOW_HAPTIC_PANEL = True  # Set to False to hide haptic visualization panels

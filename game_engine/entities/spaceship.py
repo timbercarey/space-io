@@ -181,8 +181,8 @@ class Spaceship:
         front = Vector2.from_angle(self.angle) * size
         
         # Back two points
-        back_left = Vector2.from_angle(self.angle + 150) * (size * 0.6)
-        back_right = Vector2.from_angle(self.angle - 150) * (size * 0.6)
+        back_left = Vector2.from_angle(self.angle + 130) * (size * 0.9)
+        back_right = Vector2.from_angle(self.angle - 130) * (size * 0.9)
         
         # Convert to screen coordinates
         points = [
