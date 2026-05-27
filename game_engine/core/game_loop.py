@@ -126,7 +126,7 @@ class GameLoop:
                                 self.game_state.running = False
                 elif event.key == pygame.K_r:
                     with self.state_lock:
-                        self.game_state.reset()
+                        self._restart_game()
                 elif event.key == pygame.K_h:
                     # Toggle haptic visualization
                     Config.SHOW_HAPTIC_PANEL = not Config.SHOW_HAPTIC_PANEL
@@ -140,6 +140,11 @@ class GameLoop:
                             player_ids = list(self.game_state.ships.keys())
                             self.controller.zero_throttle(player_ids)
                         print("Throttle zeroed")
+
+    def _restart_game(self):
+        """Restart the current game mode without returning to the menu."""
+        self.return_to_menu = False
+        self.game_state.reset()
     
     def _update(self, dt):
         """Update game state"""
