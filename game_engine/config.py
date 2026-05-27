@@ -10,6 +10,7 @@ class Config:
     BACKGROUND_COLOR = (0, 0, 0)  # Black
     
     # === Physics Settings ===
+    CONTROL_LOOP_FREQUENCY_HZ = 1000.0
     MAX_SPEED = 400.0  # pixels per second
     ACCELERATION = 300.0  # pixels per second^2
     BRAKE_POWER = 1.2  # Multiplier for braking (relative to acceleration, 0.5 = half power, 1.0 = same power)
@@ -83,14 +84,15 @@ class Config:
     # Steering velocity damping
     STEERING_VELOCITY_DAMPING = 600.0
     KNOB_VELOCITY_THREAD_FREQUENCY_HZ = 1000.0
-    KNOB_VELOCITY_FILTER_ALPHA = 0.65
-    KNOB_VELOCITY_POSITION_NOISE_DEADBAND = 0.0008
+    KNOB_VELOCITY_FILTER_ALPHA = 0.45
+    KNOB_VELOCITY_MIN_SAMPLE_INTERVAL_SEC = 0.006
+    KNOB_VELOCITY_POSITION_NOISE_DEADBAND = 0.0005
     KNOB_VELOCITY_ZERO_DEADBAND = 0.005
     KNOB_VELOCITY_STALE_TIMEOUT_SEC = 0.035
     KNOB_VELOCITY_PLOT_WINDOW_SEC = 5.0
     KNOB_VELOCITY_PLOT_LIMIT_DEG_PER_SEC = 180.0
     STEERING_FORCE_COMPONENT_PLOT_LIMIT = 1000.0
-    MAX_KNOB_OUTPUT_VELOCITY_DEG_PER_SEC = 1080.0
+    MAX_KNOB_OUTPUT_VELOCITY_DEG_PER_SEC = 540.0
     MAX_KNOB_ACCELERATION = 0.0  # 0 disables acceleration limiting to avoid damping phase lag
 
     # Dormant speed scaling for future damping tuning

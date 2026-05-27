@@ -1,6 +1,10 @@
 """
 Main game loop
 """
+import copy
+import threading
+import time
+
 import pygame
 from config import Config
 
@@ -21,56 +25,108 @@ class GameLoop:
         self.force_visualizer = force_visualizer
         self.clock = pygame.time.Clock()
         self.return_to_menu = False
+        self.state_lock = threading.RLock()
+        self.control_stop_event = threading.Event()
+        self.control_thread = None
     
     def run(self):
         """Main game loop"""
-        while self.game_state.running:
-            # Calculate delta time
-            dt = self.clock.tick(Config.FPS) / 1000.0  # Convert to seconds
-            self.game_state.fps = self.clock.get_fps()
-            
-            # Handle events
-            self._handle_events()
-            
-            # Update input
-            self.controller.update()
-            
-            # Update game state
-            self._update(dt)
-            
-            # Check collisions
-            self._check_collisions()
-            
-            # Update haptics
-            if self.force_calculator:
-                self.force_calculator.update(dt, self.game_state, self.controller)
-            
-            # Render
-            self._render()
-        
-        # Cleanup
-        if self.force_calculator and hasattr(self.force_calculator, 'close'):
-            self.force_calculator.close()
-        self.controller.close()
+        self._start_control_thread()
+        try:
+            while self._is_running():
+                self.clock.tick(Config.FPS)
+                with self.state_lock:
+                    self.game_state.fps = self.clock.get_fps()
+
+                # Pygame event handling and rendering stay on the main thread.
+                self._handle_events()
+                self._render()
+        finally:
+            self._stop_control_thread()
+            if self.force_calculator and hasattr(self.force_calculator, 'close'):
+                self.force_calculator.close()
+            self.controller.close()
+
         return "menu" if self.return_to_menu else "quit"
+
+    def _start_control_thread(self):
+        """Start the high-rate physics/control worker."""
+        if self.control_thread and self.control_thread.is_alive():
+            return
+
+        self.control_stop_event.clear()
+        self.control_thread = threading.Thread(
+            target=self._run_control_loop,
+            name="game-control-loop",
+            daemon=True
+        )
+        self.control_thread.start()
+
+    def _stop_control_thread(self):
+        """Stop the high-rate physics/control worker."""
+        self.control_stop_event.set()
+        if self.control_thread:
+            self.control_thread.join(timeout=1.0)
+            self.control_thread = None
+
+    def _run_control_loop(self):
+        """Run input, physics, collision checks, haptics, and force output."""
+        interval = 1.0 / max(1.0, float(Config.CONTROL_LOOP_FREQUENCY_HZ))
+        next_tick = time.perf_counter()
+        last_tick = next_tick
+
+        while not self.control_stop_event.is_set():
+            now = time.perf_counter()
+            if now < next_tick:
+                time.sleep(min(next_tick - now, interval))
+                continue
+
+            dt = now - last_tick
+            last_tick = now
+
+            with self.state_lock:
+                if not self.game_state.running:
+                    break
+
+                self.controller.update()
+                self._update(dt)
+                self._check_collisions()
+
+                if self.force_calculator:
+                    self.force_calculator.update(dt, self.game_state, self.controller)
+
+                self._send_haptic_forces()
+
+            next_tick += interval
+            if next_tick < now - interval:
+                next_tick = now + interval
+
+    def _is_running(self):
+        """Read running state safely from the main/render thread."""
+        with self.state_lock:
+            return self.game_state.running
     
     def _handle_events(self):
         """Handle pygame events"""
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                self.game_state.running = False
+                with self.state_lock:
+                    self.game_state.running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    self.game_state.running = False
+                    with self.state_lock:
+                        self.game_state.running = False
                 elif event.key == pygame.K_SPACE:
-                    if self.game_state.game_over:
-                        if self._is_round_over_pending_next_round():
-                            self.game_state.start_new_round()
-                        else:
-                            self.return_to_menu = True
-                            self.game_state.running = False
+                    with self.state_lock:
+                        if self.game_state.game_over:
+                            if self._is_round_over_pending_next_round(self.game_state):
+                                self.game_state.start_new_round()
+                            else:
+                                self.return_to_menu = True
+                                self.game_state.running = False
                 elif event.key == pygame.K_r:
-                    self.game_state.reset()
+                    with self.state_lock:
+                        self.game_state.reset()
                 elif event.key == pygame.K_h:
                     # Toggle haptic visualization
                     Config.SHOW_HAPTIC_PANEL = not Config.SHOW_HAPTIC_PANEL
@@ -80,8 +136,9 @@ class GameLoop:
                 elif event.key == pygame.K_z:
                     # Calibrate current throttle position as zero
                     if hasattr(self.controller, 'zero_throttle'):
-                        player_ids = list(self.game_state.ships.keys())
-                        self.controller.zero_throttle(player_ids)
+                        with self.state_lock:
+                            player_ids = list(self.game_state.ships.keys())
+                            self.controller.zero_throttle(player_ids)
                         print("Throttle zeroed")
     
     def _update(self, dt):
@@ -225,82 +282,88 @@ class GameLoop:
     
     def _render(self):
         """Render everything"""
+        with self.state_lock:
+            render_state = copy.deepcopy(self.game_state)
+
         self.renderer.clear()
         
         # Render trails first (so they're behind ships)
-        for ship in self.game_state.ships.values():
+        for ship in render_state.ships.values():
             self.renderer.render_trail(ship)
         
         # Render stars
-        for star in self.game_state.stars:
+        for star in render_state.stars:
             self.renderer.render_star(star)
         
         # Render mines
-        for mine in self.game_state.mines:
+        for mine in render_state.mines:
             self.renderer.render_mine(mine)
         
         # Render ships
-        for ship in self.game_state.ships.values():
+        for ship in render_state.ships.values():
             self.renderer.render_spaceship(ship)
 
         # Render safe zone
         # self.renderer.render_safe_zone_debug()  # Uncomment to see safe zone
         
         # Render HUD
-        self.renderer.render_hud(self.game_state)
-        
-        # Send haptic forces to hardware
-        if self.force_calculator and hasattr(self.controller, 'send_forces'):
-            p1_steer, p1_throttle = self.force_calculator.calculate_forces(
-                self.game_state,
-                1,
-                self.controller
-            )
-            p2_steer, p2_throttle = 0, 0
-            if 2 in self.game_state.ships:
-                p2_steer, p2_throttle = self.force_calculator.calculate_forces(
-                    self.game_state,
-                    2,
-                    self.controller
-                )
-            
-            self.controller.send_forces(p1_steer, p1_throttle, p2_steer, p2_throttle)
+        self.renderer.render_hud(render_state)
         
         # Render haptic visualization
         if self.force_visualizer and Config.SHOW_HAPTIC_PANEL:
-            self.force_visualizer.render(self.force_calculator, self.controller, self.game_state)
+            self.force_visualizer.render(self.force_calculator, self.controller, render_state)
         
         # Show game over message
-        if self.game_state.game_over:
-            if self._is_round_over_pending_next_round():
-                self._render_round_over_message()
+        if render_state.game_over:
+            if self._is_round_over_pending_next_round(render_state):
+                self._render_round_over_message(render_state)
             else:
-                self._render_game_over_message()
+                self._render_game_over_message(render_state)
             
         pygame.display.flip()
 
-    def _is_round_over_pending_next_round(self):
+    def _send_haptic_forces(self):
+        """Calculate and send haptic forces from the control thread."""
+        if not self.force_calculator or not hasattr(self.controller, 'send_forces'):
+            return
+
+        p1_steer, p1_throttle = self.force_calculator.calculate_forces(
+            self.game_state,
+            1,
+            self.controller
+        )
+        p2_steer, p2_throttle = 0, 0
+        if 2 in self.game_state.ships:
+            p2_steer, p2_throttle = self.force_calculator.calculate_forces(
+                self.game_state,
+                2,
+                self.controller
+            )
+
+        self.controller.send_forces(p1_steer, p1_throttle, p2_steer, p2_throttle)
+
+    def _is_round_over_pending_next_round(self, game_state):
         """Check whether 2P game over is only a round break, not match over."""
         return (
-            self.game_state.num_players == 2
-            and self.game_state.game_over
-            and self.game_state.get_match_winner() is None
+            game_state.num_players == 2
+            and game_state.game_over
+            and game_state.get_match_winner() is None
         )
 
-    def _render_round_over_message(self):
+    def _render_round_over_message(self, game_state):
         """Render between-round prompt for two-player mode."""
         font = pygame.font.Font(None, 48)
         small_font = pygame.font.Font(None, 32)
 
         score_y = Config.WINDOW_HEIGHT // 2 - 55
-        self._render_match_score(font, score_y)
+        self._render_match_score(font, score_y, game_state)
 
         prompt_surface = small_font.render("Press SPACEBAR for next round", True, (220, 220, 220))
         prompt_x = (Config.WINDOW_WIDTH - prompt_surface.get_width()) // 2
         prompt_y = score_y + font.get_height() + 10
         self.renderer.screen.blit(prompt_surface, (prompt_x, prompt_y))
 
-    def _render_game_over_message(self):
+    def _render_game_over_message(self, game_state):
         """Render game-over overlay."""
         title_font = pygame.font.Font(None, 96)
         font = pygame.font.Font(None, 42)
@@ -312,8 +375,8 @@ class GameLoop:
         self.renderer.screen.blit(title_surface, (title_x, title_y))
 
         next_y = title_y + title_surface.get_height() + 8
-        if self.game_state.num_players == 2:
-            winner = self.game_state.get_match_winner() or self.game_state.winner
+        if game_state.num_players == 2:
+            winner = game_state.get_match_winner() or game_state.winner
             if winner:
                 winner_color = Config.SHIP_COLOR_P1 if winner == 1 else Config.SHIP_COLOR_P2
                 winner_surface = font.render(f"Player {winner} wins", True, winner_color)
@@ -325,13 +388,13 @@ class GameLoop:
         prompt_x = (Config.WINDOW_WIDTH - prompt_surface.get_width()) // 2
         self.renderer.screen.blit(prompt_surface, (prompt_x, next_y))
 
-    def _render_match_score(self, font, y):
+    def _render_match_score(self, font, y, game_state):
         """Render 2P round score with player-colored values."""
         parts = [
             ("Score: ", (235, 235, 235)),
-            (str(self.game_state.kills[1]), Config.SHIP_COLOR_P1),
+            (str(game_state.kills[1]), Config.SHIP_COLOR_P1),
             (" - ", (235, 235, 235)),
-            (str(self.game_state.kills[2]), Config.SHIP_COLOR_P2),
+            (str(game_state.kills[2]), Config.SHIP_COLOR_P2),
         ]
         surfaces = [font.render(text, True, color) for text, color in parts]
         total_width = sum(surface.get_width() for surface in surfaces)

@@ -2,6 +2,8 @@
 Calculate haptic forces based on game state
 """
 import math
+import threading
+
 from config import Config
 from .effects import HapticEffect, HapticEffectManager
 from .velocity_estimator import AxisVelocityEstimator
@@ -23,19 +25,21 @@ class ForceCalculator:
             2: {'steering': 0.0, 'throttle': 0.0}
         }
         self.velocity_estimator = AxisVelocityEstimator()
+        self._lock = threading.RLock()
     
     def update(self, dt, game_state=None, controller=None):
         """Update effect timers"""
-        for manager in self.effect_managers.values():
-            manager.update(dt)
-        
-        # Update vibration phase for oscillation
-        for player_id in self.vibration_phase:
-            self.vibration_phase[player_id] += dt
+        with self._lock:
+            for manager in self.effect_managers.values():
+                manager.update(dt)
 
-        if controller:
-            self._start_velocity_estimator(controller)
-            self._refresh_axis_velocities()
+            # Update vibration phase for oscillation
+            for player_id in self.vibration_phase:
+                self.vibration_phase[player_id] += dt
+
+            if controller:
+                self._start_velocity_estimator(controller)
+                self._refresh_axis_velocities()
 
     def close(self):
         """Stop background haptic workers."""
@@ -53,75 +57,76 @@ class ForceCalculator:
         Returns:
             tuple: (steering_force, throttle_force) in range -1000 to 1000
         """
-        if player_id not in game_state.ships:
-            return (0.0, 0.0)
-        
-        ship = game_state.ships[player_id]
-        
-        if not ship.alive:
-            return (0.0, 0.0)
-        
-        manager = self.effect_managers[player_id]
-        
-        # Start with base forces
-        steering_force = 0.0
-        throttle_force = 0.0
-        
-        # 1. Baseline axis forces.
-        if controller:
-            has_estimator_snapshot, positions, velocities = (
-                self.velocity_estimator.get_position_velocity_snapshot()
-            )
-            if has_estimator_snapshot:
-                estimator_positions = positions.get(player_id, {})
-                estimator_velocities = velocities.get(player_id, {})
-                steering_position = estimator_positions.get(
-                    'steering',
-                    controller.get_steering(player_id)
-                )
-                throttle_position = estimator_positions.get(
-                    'throttle',
-                    controller.get_throttle(player_id)
-                )
-                self.axis_velocities[player_id]['steering'] = estimator_velocities.get(
-                    'steering',
-                    self.axis_velocities[player_id]['steering']
-                )
-                self.axis_velocities[player_id]['throttle'] = estimator_velocities.get(
-                    'throttle',
-                    self.axis_velocities[player_id]['throttle']
-                )
-            else:
-                steering_position = controller.get_steering(player_id)
-                throttle_position = controller.get_throttle(player_id)
+        with self._lock:
+            if player_id not in game_state.ships:
+                return (0.0, 0.0)
 
-            steering_force += self._calculate_steering_baseline_force(
-                ship,
-                player_id,
-                steering_position
-            )
+            ship = game_state.ships[player_id]
 
-            throttle_force += self._calculate_throttle_baseline_force(
-                ship,
-                player_id,
-                throttle_position
-            )
+            if not ship.alive:
+                return (0.0, 0.0)
 
-        # 2. Trail vibration
-        if manager.has_effect(HapticEffect.TRAIL_VIBRATION):
-            vibration = self._calculate_trail_vibration(player_id)
-            steering_force += vibration
-        
-        # 3. Mine kickback
-        if manager.has_effect(HapticEffect.MINE_KICKBACK):
-            kickback = self._calculate_mine_kickback()
-            throttle_force += kickback
-        
-        # Clamp forces to valid range
-        steering_force = max(-1000, min(1000, steering_force))
-        throttle_force = max(-1000, min(1000, throttle_force))
-        
-        return (steering_force, throttle_force)
+            manager = self.effect_managers[player_id]
+
+            # Start with base forces
+            steering_force = 0.0
+            throttle_force = 0.0
+
+            # 1. Baseline axis forces.
+            if controller:
+                has_estimator_snapshot, positions, velocities = (
+                    self.velocity_estimator.get_position_velocity_snapshot()
+                )
+                if has_estimator_snapshot:
+                    estimator_positions = positions.get(player_id, {})
+                    estimator_velocities = velocities.get(player_id, {})
+                    steering_position = estimator_positions.get(
+                        'steering',
+                        controller.get_steering(player_id)
+                    )
+                    throttle_position = estimator_positions.get(
+                        'throttle',
+                        controller.get_throttle(player_id)
+                    )
+                    self.axis_velocities[player_id]['steering'] = estimator_velocities.get(
+                        'steering',
+                        self.axis_velocities[player_id]['steering']
+                    )
+                    self.axis_velocities[player_id]['throttle'] = estimator_velocities.get(
+                        'throttle',
+                        self.axis_velocities[player_id]['throttle']
+                    )
+                else:
+                    steering_position = controller.get_steering(player_id)
+                    throttle_position = controller.get_throttle(player_id)
+
+                steering_force += self._calculate_steering_baseline_force(
+                    ship,
+                    player_id,
+                    steering_position
+                )
+
+                throttle_force += self._calculate_throttle_baseline_force(
+                    ship,
+                    player_id,
+                    throttle_position
+                )
+
+            # 2. Trail vibration
+            if manager.has_effect(HapticEffect.TRAIL_VIBRATION):
+                vibration = self._calculate_trail_vibration(player_id)
+                steering_force += vibration
+
+            # 3. Mine kickback
+            if manager.has_effect(HapticEffect.MINE_KICKBACK):
+                kickback = self._calculate_mine_kickback()
+                throttle_force += kickback
+
+            # Clamp forces to valid range
+            steering_force = max(-1000, min(1000, steering_force))
+            throttle_force = max(-1000, min(1000, throttle_force))
+
+            return (steering_force, throttle_force)
 
     def _calculate_steering_baseline_force(self, ship, player_id, steering_position):
         """Calculate the selected steering force model before event effects."""
@@ -342,7 +347,7 @@ class ForceCalculator:
         """Start the high-rate velocity worker with the best available sampler."""
         if hasattr(controller, 'get_positions_snapshot'):
             self.velocity_estimator.start(
-                lambda: controller.get_positions_snapshot(refresh=True)
+                lambda: controller.get_positions_snapshot(refresh=False)
             )
             return
 
@@ -362,7 +367,8 @@ class ForceCalculator:
 
     def get_axis_velocity(self, player_id, axis):
         """Return the latest filtered knob velocity from the daemon snapshot."""
-        return self.axis_velocities.get(player_id, {}).get(axis, 0.0)
+        with self._lock:
+            return self.axis_velocities.get(player_id, {}).get(axis, 0.0)
 
     def get_axis_position_velocity_snapshot(self):
         """Return estimator positions and velocities from the same sample."""
@@ -423,30 +429,34 @@ class ForceCalculator:
     
     def trigger_trail_collision(self, player_id):
         """Trigger trail collision vibration"""
-        manager = self.effect_managers[player_id]
-        
-        # Clear any existing trail vibration
-        manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
-        
-        # Add new vibration effect (continuous until cleared)
-        manager.add_effect(HapticEffect.TRAIL_VIBRATION, intensity=1.0, duration=0.0)
-        
-        # Reset vibration phase for consistent feel
-        self.vibration_phase[player_id] = 0.0
+        with self._lock:
+            manager = self.effect_managers[player_id]
+
+            # Clear any existing trail vibration
+            manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+
+            # Add new vibration effect (continuous until cleared)
+            manager.add_effect(HapticEffect.TRAIL_VIBRATION, intensity=1.0, duration=0.0)
+
+            # Reset vibration phase for consistent feel
+            self.vibration_phase[player_id] = 0.0
     
     def clear_trail_collision(self, player_id):
         """Stop trail collision vibration"""
-        manager = self.effect_managers[player_id]
-        manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
     
     def trigger_mine_hit(self, player_id):
         """Trigger mine kickback effect"""
-        manager = self.effect_managers[player_id]
-        manager.add_effect(HapticEffect.MINE_KICKBACK, intensity=1.0, 
-                          duration=Config.MINE_KICKBACK_DURATION)
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.add_effect(HapticEffect.MINE_KICKBACK, intensity=1.0, 
+                              duration=Config.MINE_KICKBACK_DURATION)
     
     def get_active_effects(self, player_id):
         """Get list of active effects for a player"""
-        if player_id not in self.effect_managers:
-            return []
-        return self.effect_managers[player_id].get_effects()
+        with self._lock:
+            if player_id not in self.effect_managers:
+                return []
+            return self.effect_managers[player_id].get_effects()

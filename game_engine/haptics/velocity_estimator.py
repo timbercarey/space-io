@@ -35,6 +35,7 @@ def _estimate_axis_velocities(
     alpha,
     max_velocities,
     max_acceleration,
+    min_sample_interval,
     position_noise_deadband,
     velocity_zero_deadband,
     stale_timeout
@@ -49,6 +50,9 @@ def _estimate_axis_velocities(
             axis_delta = delta[player_index, axis_index]
             previous_time = previous_position_times[player_index, axis_index]
             dt = sample_time - previous_time
+
+            if dt < min_sample_interval:
+                continue
 
             if abs(axis_delta) >= position_noise_deadband and dt > 0.0:
                 max_velocity = max_velocities[axis_index]
@@ -72,6 +76,10 @@ def _estimate_axis_velocities(
                 if abs(velocities[player_index, axis_index]) < velocity_zero_deadband:
                     velocities[player_index, axis_index] = 0.0
 
+                previous_positions[player_index, axis_index] = current_positions[player_index, axis_index]
+                position_times[player_index, axis_index] = sample_time
+            elif abs(axis_delta) < position_noise_deadband:
+                velocities[player_index, axis_index] = 0.0
                 previous_positions[player_index, axis_index] = current_positions[player_index, axis_index]
                 position_times[player_index, axis_index] = sample_time
             elif sample_time - previous_time >= stale_timeout:
@@ -156,17 +164,18 @@ class AxisVelocityEstimator:
                 time.sleep(min(next_sample_time - now, interval))
                 continue
 
-            self._sample(now)
+            self._sample()
             next_sample_time += interval
 
             if next_sample_time < now - interval:
                 next_sample_time = now + interval
 
-    def _sample(self, sample_time):
+    def _sample(self):
         try:
             positions = self._positions_to_array(self._sample_positions())
         except Exception:
             return
+        sample_time = time.perf_counter()
 
         if not self._initialized:
             with self._lock:
@@ -178,6 +187,7 @@ class AxisVelocityEstimator:
         alpha = max(0.0, min(1.0, Config.KNOB_VELOCITY_FILTER_ALPHA))
         max_velocities = self._max_normalized_velocities()
         max_acceleration = max(0.0, Config.MAX_KNOB_ACCELERATION)
+        min_sample_interval = max(0.0, Config.KNOB_VELOCITY_MIN_SAMPLE_INTERVAL_SEC)
         noise_deadband = max(0.0, Config.KNOB_VELOCITY_POSITION_NOISE_DEADBAND)
         zero_deadband = max(0.0, Config.KNOB_VELOCITY_ZERO_DEADBAND)
         stale_timeout = max(0.0, Config.KNOB_VELOCITY_STALE_TIMEOUT_SEC)
@@ -191,6 +201,7 @@ class AxisVelocityEstimator:
             alpha,
             max_velocities,
             max_acceleration,
+            min_sample_interval,
             noise_deadband,
             zero_deadband,
             stale_timeout
