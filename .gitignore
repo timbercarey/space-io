@@ -23,3 +23,7 @@ Thumbs.db
 
 # Game specific
 *.log
+
+# Test Files
+HapkitRxToMotors.ino
+Teensy4_1_encodersTx.ino
