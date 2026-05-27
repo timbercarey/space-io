@@ -83,12 +83,17 @@ class Config:
     THROTTLE_VELOCITY_DAMPING = 120.0
     # Steering velocity damping
     STEERING_VELOCITY_DAMPING = 60.0
+    STEERING_DAMPING_FORCE_LIMIT = 500.0
+    STEERING_DAMPING_VELOCITY_CAP_ENABLED = False
+    STEERING_DAMPING_VELOCITY_LIMIT = 2.0
     KNOB_VELOCITY_THREAD_FREQUENCY_HZ = 1000.0
     KNOB_VELOCITY_FILTER_ALPHA = 0.45
     KNOB_VELOCITY_MIN_SAMPLE_INTERVAL_SEC = 0.006
     KNOB_VELOCITY_POSITION_NOISE_DEADBAND = 0.0005
     KNOB_VELOCITY_ZERO_DEADBAND = 0.005
     KNOB_VELOCITY_STALE_TIMEOUT_SEC = 0.035
+    HARDWARE_VELOCITY_STALE_REJECTION_ENABLED = True
+    HARDWARE_VELOCITY_STALE_TIMEOUT_SEC = 0.020
     KNOB_VELOCITY_PLOT_WINDOW_SEC = 5.0
     KNOB_VELOCITY_PLOT_LIMIT_DEG_PER_SEC = 180.0
     STEERING_FORCE_COMPONENT_PLOT_LIMIT = 1000.0
@@ -109,10 +114,18 @@ class Config:
     HAPTIC_MODE_SPRING_DAMPER = "spring_damper"
     HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS = "spring_damper_with_walls"
     # Steering
-    STEERING_HAPTIC_MODE = HAPTIC_MODE_VIRTUAL_WALLS
+    STEERING_HAPTIC_MODE = HAPTIC_MODE_SPRING_DAMPER
     STEERING_MOTION_RANGE_DEG = 270.0
     STEERING_VIRTUAL_WALL_STIFFNESS = 8000.0
-    STEERING_CENTERING_SPRING_STIFFNESS = 1000.0
+    STEERING_VIRTUAL_WALL_INTO_WALL_DAMPING = 0.0
+    STEERING_WALL_DAMPING_VELOCITY_HYSTERESIS_ENABLED = True
+    STEERING_WALL_DAMPING_VELOCITY_ENTER_THRESHOLD = 0.04
+    STEERING_WALL_DAMPING_VELOCITY_EXIT_THRESHOLD = 0.015
+    STEERING_WALL_DAMPING_MIN_PENETRATION_ENABLED = True
+    STEERING_WALL_DAMPING_MIN_PENETRATION = 0.005
+    STEERING_WALL_DAMPING_PENETRATION_RAMP_ENABLED = True
+    STEERING_WALL_DAMPING_RAMP_PENETRATION = 0.035
+    STEERING_CENTERING_SPRING_STIFFNESS = 3000.0
     # Throttle
     THROTTLE_HAPTIC_MODE_VIRTUAL_WALLS = HAPTIC_MODE_VIRTUAL_WALLS
     THROTTLE_HAPTIC_MODE_SPRING_DAMPER = HAPTIC_MODE_SPRING_DAMPER
@@ -125,6 +138,28 @@ class Config:
     THROTTLE_BOOST_PUSH_THROUGH_ENABLED = True
     THROTTLE_BOOST_PUSH_THROUGH_WIDTH_DEG = 12.0
     THROTTLE_BOOST_PUSH_THROUGH_STIFFNESS = 2200.0
+
+    DAMPING_EFFECTS = [
+        "Steering baseline damping: always-on viscous steering damping from normalized knob velocity.",
+        "Steering damping force cap: clamps total steering damping force without limiting spring or elastic wall force.",
+        "Steering damping velocity cap: clips the velocity used by steering damping without adding low-pass phase lag.",
+        "Steering into-wall damping: adds damping only while steering is penetrating a wall and moving deeper into it.",
+        "Steering wall velocity hysteresis: gates into-wall damping with separate enter/exit outward-speed thresholds.",
+        "Steering wall minimum penetration: suppresses extra wall damping until the knob is meaningfully past the wall.",
+        "Steering wall penetration ramp: fades extra wall damping in over a configurable penetration distance.",
+        "Throttle baseline damping: viscous throttle damping used by throttle damper and wall-contact modes.",
+    ]
+
+    VELOCITY_PROCESSING_EFFECTS = [
+        "Teensy adaptive velocity window: estimates velocity after enough encoder counts or elapsed time accumulate.",
+        "Teensy time-constant velocity filter: keeps filter behavior stable under control-loop timing jitter.",
+        "Teensy asymmetric velocity filter: responds faster to acceleration and direction changes than to decay.",
+        "Teensy zero hysteresis: uses separate enter/exit thresholds to avoid velocity chatter around zero.",
+        "Teensy stale velocity decay: smoothly decays held velocity when counts stop changing.",
+        "Teensy velocity sample age: sends VEL_AGE_US so the host can reject stale hardware velocity.",
+        "Host hardware stale rejection: ignores hardware velocity packets older than the configured timeout.",
+        "Host fallback estimator: estimates velocity from normalized position changes when hardware velocity is unavailable.",
+    ]
     
     # Trail collision vibration
     TRAIL_VIBRATION_FREQ = 50  # Hz

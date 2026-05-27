@@ -81,13 +81,13 @@ Force values are clamped to `-1000..1000`.
 ### From Teensy To Laptop
 
 ```text
-P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS,P1_STEER_VEL,P1_THROTTLE_VEL,P2_STEER_VEL,P2_THROTTLE_VEL\n
+P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS,P1_STEER_VEL,P1_THROTTLE_VEL,P2_STEER_VEL,P2_THROTTLE_VEL[,VEL_AGE_US]\n
 ```
 
 Example:
 
 ```text
-P,1500,-300,0,0,1240.50,-210.00,0.00,0.00
+P,1500,-300,0,0,1240.50,-210.00,0.00,0.00,2000
 ```
 
 Encoder positions are raw counts. Encoder velocities are filtered counts per
@@ -95,6 +95,17 @@ second. The Python game normalizes both using
 `STEERING_ENCODER_COUNTS_PER_ROTATION`,
 `THROTTLE_ENCODER_COUNTS_PER_ROTATION`,
 `STEERING_CONTROL_ROTATION_RANGE`, and `THROTTLE_CONTROL_ROTATION_RANGE`.
+The optional `VEL_AGE_US` field reports the oldest Teensy velocity sample age
+in microseconds so the Python side can ignore stale hardware velocity.
+
+Velocity processing features are controlled in `config.h`:
+
+- `VELOCITY_ADAPTIVE_WINDOW_ENABLED`
+- `VELOCITY_TIME_CONSTANT_FILTER_ENABLED`
+- `VELOCITY_ASYMMETRIC_FILTER_ENABLED`
+- `VELOCITY_ZERO_HYSTERESIS_ENABLED`
+- `VELOCITY_STALE_DECAY_ENABLED`
+- `VELOCITY_SEND_SAMPLE_AGE_ENABLED`
 
 ## Testing
 

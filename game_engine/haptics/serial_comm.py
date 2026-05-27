@@ -31,6 +31,8 @@ class SerialComm:
             2: {'steering': 0.0, 'throttle': 0.0}
         }
         self.has_velocity_data = False
+        self.latest_velocity_sample_age_sec = 0.0
+        self.latest_velocity_receive_time = 0.0
         self.latest_encoder_counts = {
             1: {'steering': 0, 'throttle': 0},
             2: {'steering': 0, 'throttle': 0}
@@ -117,14 +119,14 @@ class SerialComm:
         Parse position data from Teensy
         
         Expected format:
-        P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL
+        P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US]
 
         The older position-only format is still accepted:
         P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS
         """
         try:
             parts = line.split(',')
-            if parts[0] != 'P' or len(parts) not in (5, 9):
+            if parts[0] != 'P' or len(parts) not in (5, 9, 10):
                 return
             
             # Parse raw encoder counts
@@ -151,6 +153,28 @@ class SerialComm:
 
             if len(parts) == 9:
                 self.has_velocity_data = True
+                self.latest_velocity_sample_age_sec = 0.0
+                self.latest_velocity_receive_time = time.perf_counter()
+                p1_steer_velocity = self._normalize_encoder_velocity(
+                    float(parts[5]),
+                    'steering'
+                )
+                p1_throttle_velocity = self._normalize_encoder_velocity(
+                    float(parts[6]),
+                    'throttle'
+                )
+                p2_steer_velocity = self._normalize_encoder_velocity(
+                    float(parts[7]),
+                    'steering'
+                )
+                p2_throttle_velocity = self._normalize_encoder_velocity(
+                    float(parts[8]),
+                    'throttle'
+                )
+            elif len(parts) == 10:
+                self.has_velocity_data = True
+                self.latest_velocity_sample_age_sec = max(0.0, float(parts[9]) / 1000000.0)
+                self.latest_velocity_receive_time = time.perf_counter()
                 p1_steer_velocity = self._normalize_encoder_velocity(
                     float(parts[5]),
                     'steering'
@@ -224,13 +248,33 @@ class SerialComm:
 
         return direction * counts_per_second / max_counts
 
+    def _hardware_velocity_is_fresh(self):
+        """Return whether the latest Teensy velocity packet is usable."""
+        if not self.has_velocity_data:
+            return False
+
+        if not Config.HARDWARE_VELOCITY_STALE_REJECTION_ENABLED:
+            return True
+
+        timeout = max(0.0, Config.HARDWARE_VELOCITY_STALE_TIMEOUT_SEC)
+        if timeout <= 0.0:
+            return True
+
+        if self.latest_velocity_sample_age_sec > timeout:
+            return False
+
+        if self.latest_velocity_receive_time <= 0.0:
+            return False
+
+        return (time.perf_counter() - self.latest_velocity_receive_time) <= timeout
+
     def get_position_velocity_snapshot(self, refresh=False):
         """Return copies of the latest hardware positions and velocities."""
         if refresh:
             self.read_positions()
 
         return (
-            self.has_velocity_data,
+            self._hardware_velocity_is_fresh(),
             {
                 player_id: axes.copy()
                 for player_id, axes in self.latest_positions.items()
@@ -243,7 +287,7 @@ class SerialComm:
 
     def has_hardware_velocity_data(self):
         """Return True after receiving at least one velocity-bearing packet."""
-        return self.has_velocity_data
+        return self._hardware_velocity_is_fresh()
 
     def zero_throttle(self, player_ids=None):
         """Use the current raw throttle count as zero for selected players."""

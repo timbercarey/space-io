@@ -24,6 +24,7 @@ class ForceCalculator:
             1: {'steering': 0.0, 'throttle': 0.0},
             2: {'steering': 0.0, 'throttle': 0.0}
         }
+        self.steering_wall_damping_latched = {1: False, 2: False}
         self.velocity_estimator = AxisVelocityEstimator()
         self.using_hardware_velocity = False
         self._latest_position_velocity_snapshot = (
@@ -154,23 +155,24 @@ class ForceCalculator:
             )
 
         if mode == Config.HAPTIC_MODE_DAMPER_ONLY:
-            return self._calculate_knob_damping(
+            damping = self._calculate_steering_damping_force(
                 ship,
                 player_id,
-                'steering',
-                Config.STEERING_VELOCITY_DAMPING
+                steering_position,
+                include_wall_damping=False
             )
+            return damping
 
         if mode == Config.HAPTIC_MODE_SPRING_DAMPER:
             spring = self._calculate_centering_spring(
                 steering_position,
                 Config.STEERING_CENTERING_SPRING_STIFFNESS
             )
-            damping = self._calculate_knob_damping(
+            damping = self._calculate_steering_damping_force(
                 ship,
                 player_id,
-                'steering',
-                Config.STEERING_VELOCITY_DAMPING
+                steering_position,
+                include_wall_damping=False
             )
             return spring + damping
 
@@ -181,11 +183,11 @@ class ForceCalculator:
                 Config.STEERING_CONTROL_ROTATION_RANGE,
                 Config.STEERING_VIRTUAL_WALL_STIFFNESS
             )
-            damping = self._calculate_knob_damping(
+            damping = self._calculate_steering_damping_force(
                 ship,
                 player_id,
-                'steering',
-                Config.STEERING_VELOCITY_DAMPING
+                steering_position,
+                include_wall_damping=True
             )
             return wall + damping
 
@@ -194,11 +196,11 @@ class ForceCalculator:
                 steering_position,
                 Config.STEERING_CENTERING_SPRING_STIFFNESS
             )
-            damping = self._calculate_knob_damping(
+            damping = self._calculate_steering_damping_force(
                 ship,
                 player_id,
-                'steering',
-                Config.STEERING_VELOCITY_DAMPING
+                steering_position,
+                include_wall_damping=True
             )
             wall = self._calculate_virtual_wall(
                 steering_position,
@@ -345,6 +347,129 @@ class ForceCalculator:
         """Calculate a simple spring force toward normalized zero."""
         return -position * stiffness
 
+    def _calculate_steering_wall_damping(self, player_id, steering_position, velocity):
+        """Add damping only while steering is moving deeper into a wall."""
+        damping_coefficient = Config.STEERING_VIRTUAL_WALL_INTO_WALL_DAMPING
+        if damping_coefficient <= 0.0:
+            return 0.0
+
+        penetration = self._calculate_virtual_wall_penetration(
+            steering_position,
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if penetration <= 0.0:
+            self.steering_wall_damping_latched[player_id] = False
+            return 0.0
+
+        outward_velocity = self._calculate_virtual_wall_outward_velocity(
+            steering_position,
+            velocity,
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if outward_velocity <= 0.0:
+            self.steering_wall_damping_latched[player_id] = False
+            return 0.0
+
+        if not self._steering_wall_damping_velocity_gate(player_id, outward_velocity):
+            return 0.0
+
+        penetration_after_threshold = self._steering_wall_damping_effective_penetration(
+            penetration
+        )
+        if penetration_after_threshold <= 0.0:
+            return 0.0
+
+        damping_scale = self._steering_wall_damping_penetration_scale(
+            penetration_after_threshold
+        )
+        return -velocity * damping_coefficient * damping_scale
+
+    def _calculate_steering_damping_force(
+        self,
+        ship,
+        player_id,
+        steering_position,
+        include_wall_damping
+    ):
+        """Calculate total steering damping, capped as one combined component."""
+        velocity = self._get_steering_damping_velocity(player_id)
+        damping = (
+            -velocity
+            * Config.STEERING_VELOCITY_DAMPING
+            * self._calculate_speed_damping_scale(ship)
+        )
+        if include_wall_damping:
+            damping += self._calculate_steering_wall_damping(
+                player_id,
+                steering_position,
+                velocity
+            )
+        return self._limit_steering_damping_force(damping)
+
+    def _get_steering_damping_velocity(self, player_id):
+        """Return steering velocity after optional direct clipping for damping."""
+        velocity = self.axis_velocities[player_id]['steering']
+        if not Config.STEERING_DAMPING_VELOCITY_CAP_ENABLED:
+            return velocity
+
+        limit = Config.STEERING_DAMPING_VELOCITY_LIMIT
+        if limit <= 0.0:
+            return velocity
+
+        return max(-limit, min(limit, velocity))
+
+    def _steering_wall_damping_velocity_gate(self, player_id, outward_velocity):
+        """Gate wall damping with optional outward-velocity hysteresis."""
+        if not Config.STEERING_WALL_DAMPING_VELOCITY_HYSTERESIS_ENABLED:
+            return True
+
+        enter_threshold = max(0.0, Config.STEERING_WALL_DAMPING_VELOCITY_ENTER_THRESHOLD)
+        exit_threshold = max(
+            0.0,
+            min(enter_threshold, Config.STEERING_WALL_DAMPING_VELOCITY_EXIT_THRESHOLD)
+        )
+        is_latched = self.steering_wall_damping_latched.get(player_id, False)
+
+        if is_latched:
+            if outward_velocity <= exit_threshold:
+                self.steering_wall_damping_latched[player_id] = False
+                return False
+            return True
+
+        if outward_velocity >= enter_threshold:
+            self.steering_wall_damping_latched[player_id] = True
+            return True
+
+        return False
+
+    def _steering_wall_damping_effective_penetration(self, penetration):
+        """Apply optional minimum penetration before wall damping can engage."""
+        if not Config.STEERING_WALL_DAMPING_MIN_PENETRATION_ENABLED:
+            return penetration
+
+        return penetration - max(0.0, Config.STEERING_WALL_DAMPING_MIN_PENETRATION)
+
+    def _steering_wall_damping_penetration_scale(self, effective_penetration):
+        """Fade in extra wall damping over the configured penetration distance."""
+        if not Config.STEERING_WALL_DAMPING_PENETRATION_RAMP_ENABLED:
+            return 1.0
+
+        ramp_penetration = max(0.0, Config.STEERING_WALL_DAMPING_RAMP_PENETRATION)
+        if ramp_penetration <= 0.0:
+            return 1.0
+
+        return max(0.0, min(1.0, effective_penetration / ramp_penetration))
+
+    def _limit_steering_damping_force(self, damping_force):
+        """Clamp steering damping in motor force units; non-positive disables cap."""
+        limit = Config.STEERING_DAMPING_FORCE_LIMIT
+        if limit <= 0.0:
+            return damping_force
+
+        return max(-limit, min(limit, damping_force))
+
     def _calculate_virtual_wall(
         self,
         position,
@@ -393,6 +518,69 @@ class ForceCalculator:
         )
 
         return position > forward_limit or position < -rear_limit
+
+    def _is_moving_deeper_into_virtual_wall(
+        self,
+        position,
+        velocity,
+        motion_range_deg,
+        control_rotation_range,
+        forward_extension_deg=0.0
+    ):
+        """Return True only when penetration and velocity point farther outward."""
+        rear_limit, forward_limit = self._get_virtual_wall_limits(
+            motion_range_deg,
+            control_rotation_range,
+            forward_extension_deg
+        )
+
+        return (
+            (position > forward_limit and velocity > 0.0)
+            or (position < -rear_limit and velocity < 0.0)
+        )
+
+    def _calculate_virtual_wall_penetration(
+        self,
+        position,
+        motion_range_deg,
+        control_rotation_range,
+        forward_extension_deg=0.0
+    ):
+        """Return positive normalized penetration beyond either virtual wall."""
+        rear_limit, forward_limit = self._get_virtual_wall_limits(
+            motion_range_deg,
+            control_rotation_range,
+            forward_extension_deg
+        )
+
+        if position > forward_limit:
+            return position - forward_limit
+        if position < -rear_limit:
+            return -rear_limit - position
+
+        return 0.0
+
+    def _calculate_virtual_wall_outward_velocity(
+        self,
+        position,
+        velocity,
+        motion_range_deg,
+        control_rotation_range,
+        forward_extension_deg=0.0
+    ):
+        """Return positive velocity only when moving farther into a wall."""
+        rear_limit, forward_limit = self._get_virtual_wall_limits(
+            motion_range_deg,
+            control_rotation_range,
+            forward_extension_deg
+        )
+
+        if position > forward_limit:
+            return max(0.0, velocity)
+        if position < -rear_limit:
+            return max(0.0, -velocity)
+
+        return 0.0
 
     def _get_virtual_wall_limits(
         self,

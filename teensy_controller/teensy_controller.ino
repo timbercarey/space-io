@@ -7,7 +7,7 @@
  *
  * Message Format:
  *   FROM LAPTOP: F,P1S,P1T,P2S,P2T\n
- *   TO LAPTOP:   P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL\n
+ *   TO LAPTOP:   P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US]\n
  *
  * Force values are integers (-1000 to 1000). Encoder positions are raw counts.
  * Encoder velocities are filtered counts per second.
@@ -49,15 +49,24 @@ long p1ThrottleCounts = 0;
 long p2SteeringCounts = 0;
 long p2ThrottleCounts = 0;
 
-long previousP1SteeringCounts = 0;
-long previousP1ThrottleCounts = 0;
-long previousP2SteeringCounts = 0;
-long previousP2ThrottleCounts = 0;
+struct VelocityState {
+  long previousCounts;
+  long accumulatedDeltaCounts;
+  unsigned long accumulatedMicros;
+  unsigned long lastSampleMicros;
+  float filteredVelocity;
+  bool zeroLatched;
+};
 
 float p1SteeringVelocity = 0.0f;
 float p1ThrottleVelocity = 0.0f;
 float p2SteeringVelocity = 0.0f;
 float p2ThrottleVelocity = 0.0f;
+
+VelocityState p1SteeringVelocityState = {0, 0, 0, 0, 0.0f, true};
+VelocityState p1ThrottleVelocityState = {0, 0, 0, 0, 0.0f, true};
+VelocityState p2SteeringVelocityState = {0, 0, 0, 0, 0.0f, true};
+VelocityState p2ThrottleVelocityState = {0, 0, 0, 0, 0.0f, true};
 
 int p1SteeringForce = 0;
 int p1ThrottleForce = 0;
@@ -82,10 +91,10 @@ void setup() {
   p2ThrottleEncoder.init();
 
   readEncoders();
-  previousP1SteeringCounts = p1SteeringCounts;
-  previousP1ThrottleCounts = p1ThrottleCounts;
-  previousP2SteeringCounts = p2SteeringCounts;
-  previousP2ThrottleCounts = p2ThrottleCounts;
+  initializeVelocityState(p1SteeringVelocityState, p1SteeringCounts);
+  initializeVelocityState(p1ThrottleVelocityState, p1ThrottleCounts);
+  initializeVelocityState(p2SteeringVelocityState, p2SteeringCounts);
+  initializeVelocityState(p2ThrottleVelocityState, p2ThrottleCounts);
 
   delay(500);
   lastControlUpdate = micros();
@@ -122,60 +131,211 @@ void readEncoders() {
   p2ThrottleCounts = p2ThrottleEncoder.read();
 }
 
-float calculateFilteredVelocity(long currentCounts, long previousCounts, float previousVelocity, float dtSeconds) {
+void initializeVelocityState(VelocityState& state, long counts) {
+  state.previousCounts = counts;
+  state.accumulatedDeltaCounts = 0;
+  state.accumulatedMicros = 0;
+  state.lastSampleMicros = micros();
+  state.filteredVelocity = 0.0f;
+  state.zeroLatched = true;
+}
+
+float clampVelocityAlpha(float alpha) {
+  if (alpha < 0.0f) {
+    return 0.0f;
+  }
+  if (alpha > 1.0f) {
+    return 1.0f;
+  }
+  return alpha;
+}
+
+float calculateTimeConstantAlpha(float dtSeconds, float tauSeconds) {
   if (dtSeconds <= 0.0f) {
-    return previousVelocity;
+    return 0.0f;
+  }
+  if (tauSeconds <= 0.0f) {
+    return 1.0f;
+  }
+  return clampVelocityAlpha(1.0f - expf(-dtSeconds / tauSeconds));
+}
+
+float selectVelocityFilterAlpha(float rawVelocity, float previousVelocity, float dtSeconds) {
+#if VELOCITY_ASYMMETRIC_FILTER_ENABLED
+  bool fastResponse = (
+    rawVelocity * previousVelocity < 0.0f
+    || fabsf(rawVelocity) > fabsf(previousVelocity)
+  );
+
+  #if VELOCITY_TIME_CONSTANT_FILTER_ENABLED
+    return calculateTimeConstantAlpha(
+      dtSeconds,
+      fastResponse ? VELOCITY_FILTER_FAST_TAU_SECONDS : VELOCITY_FILTER_SLOW_TAU_SECONDS
+    );
+  #else
+    return clampVelocityAlpha(
+      fastResponse ? VELOCITY_FILTER_ALPHA_FAST : VELOCITY_FILTER_ALPHA_SLOW
+    );
+  #endif
+#else
+  #if VELOCITY_TIME_CONSTANT_FILTER_ENABLED
+    return calculateTimeConstantAlpha(dtSeconds, VELOCITY_FILTER_TAU_SECONDS);
+  #else
+    return clampVelocityAlpha(VELOCITY_FILTER_ALPHA);
+  #endif
+#endif
+}
+
+float applyVelocityZeroLogic(float velocity, VelocityState& state) {
+#if VELOCITY_ZERO_HYSTERESIS_ENABLED
+  float speed = fabsf(velocity);
+
+  if (state.zeroLatched) {
+    if (speed < VELOCITY_ZERO_EXIT_COUNTS_PER_SECOND) {
+      return 0.0f;
+    }
+    state.zeroLatched = false;
+  } else if (speed < VELOCITY_ZERO_ENTER_COUNTS_PER_SECOND) {
+    state.zeroLatched = true;
+    return 0.0f;
   }
 
-  float rawVelocity = (float)(currentCounts - previousCounts) / dtSeconds;
+  return velocity;
+#else
+  if (fabsf(velocity) < VELOCITY_COUNTS_PER_SECOND_DEADBAND) {
+    return 0.0f;
+  }
+
+  return velocity;
+#endif
+}
+
+float decayStaleVelocity(float previousVelocity, float dtSeconds, VelocityState& state) {
+#if VELOCITY_STALE_DECAY_ENABLED
+  float decayAlpha = calculateTimeConstantAlpha(dtSeconds, VELOCITY_STALE_DECAY_TAU_SECONDS);
+  float decayedVelocity = previousVelocity * (1.0f - decayAlpha);
+  return applyVelocityZeroLogic(decayedVelocity, state);
+#else
+  (void)dtSeconds;
+  state.zeroLatched = true;
+  return 0.0f;
+#endif
+}
+
+float updateVelocityEstimate(VelocityState& state, long currentCounts, unsigned long elapsedMicros) {
+  if (elapsedMicros == 0) {
+    return state.filteredVelocity;
+  }
+
+#if VELOCITY_ADAPTIVE_WINDOW_ENABLED
+  long deltaCounts = currentCounts - state.previousCounts;
+  state.previousCounts = currentCounts;
+  state.accumulatedDeltaCounts += deltaCounts;
+  state.accumulatedMicros += elapsedMicros;
+
+  bool enoughMotion = labs(state.accumulatedDeltaCounts) >= VELOCITY_MIN_DELTA_COUNTS;
+  bool enoughTime = state.accumulatedMicros >= VELOCITY_MAX_WINDOW_US;
+  if (!enoughMotion && !enoughTime) {
+    return state.filteredVelocity;
+  }
+
+  float dtSeconds = (float)state.accumulatedMicros / 1000000.0f;
+  if (dtSeconds <= 0.0f) {
+    return state.filteredVelocity;
+  }
+
+  if (!enoughMotion) {
+    state.filteredVelocity = decayStaleVelocity(
+      state.filteredVelocity,
+      dtSeconds,
+      state
+    );
+    state.accumulatedDeltaCounts = 0;
+    state.accumulatedMicros = 0;
+    state.lastSampleMicros = micros();
+    return state.filteredVelocity;
+  }
+
+  float rawVelocity = (float)state.accumulatedDeltaCounts / dtSeconds;
+  float alpha = selectVelocityFilterAlpha(
+    rawVelocity,
+    state.filteredVelocity,
+    dtSeconds
+  );
+  state.filteredVelocity = (
+    alpha * rawVelocity
+    + (1.0f - alpha) * state.filteredVelocity
+  );
+  state.filteredVelocity = applyVelocityZeroLogic(state.filteredVelocity, state);
+  state.accumulatedDeltaCounts = 0;
+  state.accumulatedMicros = 0;
+  state.lastSampleMicros = micros();
+  return state.filteredVelocity;
+#else
+  float dtSeconds = (float)elapsedMicros / 1000000.0f;
+  if (dtSeconds <= 0.0f) {
+    return state.filteredVelocity;
+  }
+
+  float rawVelocity = (float)(currentCounts - state.previousCounts) / dtSeconds;
   if (fabsf(rawVelocity) < VELOCITY_COUNTS_PER_SECOND_DEADBAND) {
     rawVelocity = 0.0f;
   }
 
-  float filteredVelocity = (
-    VELOCITY_FILTER_ALPHA * rawVelocity
-    + (1.0f - VELOCITY_FILTER_ALPHA) * previousVelocity
+  float alpha = selectVelocityFilterAlpha(
+    rawVelocity,
+    state.filteredVelocity,
+    dtSeconds
   );
+  state.filteredVelocity = (
+    alpha * rawVelocity
+    + (1.0f - alpha) * state.filteredVelocity
+  );
+  state.filteredVelocity = applyVelocityZeroLogic(state.filteredVelocity, state);
+  state.previousCounts = currentCounts;
+  state.lastSampleMicros = micros();
+  return state.filteredVelocity;
+#endif
+}
 
-  if (fabsf(filteredVelocity) < VELOCITY_COUNTS_PER_SECOND_DEADBAND) {
-    return 0.0f;
+unsigned long latestVelocitySampleAgeUs() {
+  unsigned long now = micros();
+  unsigned long oldestSampleMicros = p1SteeringVelocityState.lastSampleMicros;
+
+  if (p1ThrottleVelocityState.lastSampleMicros < oldestSampleMicros) {
+    oldestSampleMicros = p1ThrottleVelocityState.lastSampleMicros;
+  }
+  if (p2SteeringVelocityState.lastSampleMicros < oldestSampleMicros) {
+    oldestSampleMicros = p2SteeringVelocityState.lastSampleMicros;
+  }
+  if (p2ThrottleVelocityState.lastSampleMicros < oldestSampleMicros) {
+    oldestSampleMicros = p2ThrottleVelocityState.lastSampleMicros;
   }
 
-  return filteredVelocity;
+  return now - oldestSampleMicros;
 }
 
 void updateVelocities(unsigned long elapsedMicros) {
-  float dtSeconds = (float)elapsedMicros / 1000000.0f;
-
-  p1SteeringVelocity = calculateFilteredVelocity(
+  p1SteeringVelocity = updateVelocityEstimate(
+    p1SteeringVelocityState,
     p1SteeringCounts,
-    previousP1SteeringCounts,
-    p1SteeringVelocity,
-    dtSeconds
+    elapsedMicros
   );
-  p1ThrottleVelocity = calculateFilteredVelocity(
+  p1ThrottleVelocity = updateVelocityEstimate(
+    p1ThrottleVelocityState,
     p1ThrottleCounts,
-    previousP1ThrottleCounts,
-    p1ThrottleVelocity,
-    dtSeconds
+    elapsedMicros
   );
-  p2SteeringVelocity = calculateFilteredVelocity(
+  p2SteeringVelocity = updateVelocityEstimate(
+    p2SteeringVelocityState,
     p2SteeringCounts,
-    previousP2SteeringCounts,
-    p2SteeringVelocity,
-    dtSeconds
+    elapsedMicros
   );
-  p2ThrottleVelocity = calculateFilteredVelocity(
+  p2ThrottleVelocity = updateVelocityEstimate(
+    p2ThrottleVelocityState,
     p2ThrottleCounts,
-    previousP2ThrottleCounts,
-    p2ThrottleVelocity,
-    dtSeconds
+    elapsedMicros
   );
-
-  previousP1SteeringCounts = p1SteeringCounts;
-  previousP1ThrottleCounts = p1ThrottleCounts;
-  previousP2SteeringCounts = p2SteeringCounts;
-  previousP2ThrottleCounts = p2ThrottleCounts;
 }
 
 void readFromLaptop() {
@@ -252,7 +412,7 @@ byte forceToHapkitCommand(int force) {
 }
 
 void sendPositionsToLaptop() {
-  // Format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL
+  // Format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US]
   LAPTOP_SERIAL.print("P,");
   LAPTOP_SERIAL.print(p1SteeringCounts);
   LAPTOP_SERIAL.print(",");
@@ -268,5 +428,11 @@ void sendPositionsToLaptop() {
   LAPTOP_SERIAL.print(",");
   LAPTOP_SERIAL.print(p2SteeringVelocity, 2);
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.println(p2ThrottleVelocity, 2);
+  LAPTOP_SERIAL.print(p2ThrottleVelocity, 2);
+#if VELOCITY_SEND_SAMPLE_AGE_ENABLED
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.println(latestVelocitySampleAgeUs());
+#else
+  LAPTOP_SERIAL.println();
+#endif
 }

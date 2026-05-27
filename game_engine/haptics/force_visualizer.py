@@ -280,11 +280,26 @@ class ForceVisualizer:
         else:
             steering_position = controller.get_steering(player_id)
             steering_velocity = 0.0
-        damping_force = (
-            -steering_velocity
+        steering_damping_velocity = force_calculator._get_steering_damping_velocity(
+            player_id
+        )
+        raw_damping_force = (
+            -steering_damping_velocity
             * Config.STEERING_VELOCITY_DAMPING
             * force_calculator._calculate_speed_damping_scale(ship)
         )
+        raw_wall_damping_force = self._calculate_active_steering_wall_damping_force(
+            force_calculator,
+            steering_damping_velocity,
+            steering_position
+        )
+        capped_total_damping_force = force_calculator._limit_steering_damping_force(
+            raw_damping_force + raw_wall_damping_force
+        )
+        damping_force = force_calculator._limit_steering_damping_force(
+            raw_damping_force
+        )
+        wall_damping_force = capped_total_damping_force - damping_force
         spring_force = self._calculate_active_steering_spring_force(
             force_calculator,
             steering_position
@@ -292,7 +307,7 @@ class ForceVisualizer:
         wall_force = self._calculate_active_steering_wall_force(
             force_calculator,
             steering_position
-        )
+        ) + wall_damping_force
 
         history = self.steering_force_component_history.setdefault(player_id, [])
         history.append((now, damping_force, spring_force, wall_force))
@@ -380,8 +395,12 @@ class ForceVisualizer:
             Config.STEERING_CENTERING_SPRING_STIFFNESS
         )
 
-    def _calculate_active_steering_wall_force(self, force_calculator, steering_position):
-        """Return the steering wall component active in the selected steering mode."""
+    def _calculate_active_steering_wall_force(
+        self,
+        force_calculator,
+        steering_position
+    ):
+        """Return the elastic steering wall component active in the selected mode."""
         if Config.STEERING_HAPTIC_MODE in (
             Config.HAPTIC_MODE_VIRTUAL_WALLS,
             Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
@@ -394,6 +413,61 @@ class ForceVisualizer:
             )
 
         return 0.0
+
+    def _calculate_active_steering_wall_damping_force(
+        self,
+        force_calculator,
+        steering_velocity,
+        steering_position
+    ):
+        """Return raw extra damping from steering-wall entry before global cap."""
+        if Config.STEERING_HAPTIC_MODE not in (
+            Config.HAPTIC_MODE_VIRTUAL_WALLS,
+            Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
+        ):
+            return 0.0
+
+        penetration = force_calculator._calculate_virtual_wall_penetration(
+            steering_position,
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if penetration <= 0.0:
+            return 0.0
+
+        outward_velocity = force_calculator._calculate_virtual_wall_outward_velocity(
+            steering_position,
+            steering_velocity,
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if outward_velocity <= 0.0:
+            return 0.0
+
+        if Config.STEERING_WALL_DAMPING_VELOCITY_HYSTERESIS_ENABLED:
+            enter_threshold = max(
+                0.0,
+                Config.STEERING_WALL_DAMPING_VELOCITY_ENTER_THRESHOLD
+            )
+            if outward_velocity < enter_threshold:
+                return 0.0
+
+        effective_penetration = (
+            force_calculator._steering_wall_damping_effective_penetration(
+                penetration
+            )
+        )
+        if effective_penetration <= 0.0:
+            return 0.0
+
+        damping_scale = force_calculator._steering_wall_damping_penetration_scale(
+            effective_penetration
+        )
+        return (
+            -steering_velocity
+            * Config.STEERING_VIRTUAL_WALL_INTO_WALL_DAMPING
+            * damping_scale
+        )
 
     def _force_to_plot_y(self, force, force_limit, plot_rect):
         normalized_force = max(-1.0, min(1.0, force / force_limit))
