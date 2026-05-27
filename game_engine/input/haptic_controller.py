@@ -1,6 +1,8 @@
 """
 Haptic controller - reads from real hardware via serial
 """
+import threading
+
 from .controller import Controller
 from haptics.serial_comm import SerialComm
 from config import Config
@@ -23,13 +25,25 @@ class HapticController(Controller):
         else:
             self.serial_comm = serial_comm
             self.owns_serial = False
+        self._io_lock = threading.Lock()
         
         # Current input values
         self.positions = self.serial_comm.latest_positions
     
     def update(self):
         """Read latest positions from hardware"""
-        self.positions = self.serial_comm.read_positions()
+        self.positions = self.get_positions_snapshot(refresh=True)
+
+    def get_positions_snapshot(self, refresh=False):
+        """Return a thread-safe copy of the latest controller positions."""
+        with self._io_lock:
+            if refresh:
+                self.positions = self.serial_comm.read_positions()
+
+            return {
+                player_id: axes.copy()
+                for player_id, axes in self.positions.items()
+            }
     
     def get_steering(self, player_id):
         """
@@ -41,9 +55,10 @@ class HapticController(Controller):
         Returns:
             float: -1.0 to 1.0 (left to right)
         """
-        if player_id not in self.positions:
-            return 0.0
-        return self.positions[player_id]['steering']
+        with self._io_lock:
+            if player_id not in self.positions:
+                return 0.0
+            return self.positions[player_id]['steering']
     
     def get_throttle(self, player_id):
         """
@@ -55,9 +70,10 @@ class HapticController(Controller):
         Returns:
             float: -1.0 to 1.0 (back to forward)
         """
-        if player_id not in self.positions:
-            return 0.0
-        return self.positions[player_id]['throttle']
+        with self._io_lock:
+            if player_id not in self.positions:
+                return 0.0
+            return self.positions[player_id]['throttle']
     
     def send_forces(self, p1_steer, p1_throttle, p2_steer=0, p2_throttle=0):
         """
@@ -69,9 +85,16 @@ class HapticController(Controller):
             p2_steer: Player 2 steering force (-1000 to 1000)
             p2_throttle: Player 2 throttle force (-1000 to 1000)
         """
-        self.serial_comm.send_forces(p1_steer, p1_throttle, p2_steer, p2_throttle)
+        with self._io_lock:
+            self.serial_comm.send_forces(p1_steer, p1_throttle, p2_steer, p2_throttle)
+
+    def zero_throttle(self, player_ids=None):
+        """Use current hardware throttle count as the zero position."""
+        with self._io_lock:
+            return self.serial_comm.zero_throttle(player_ids)
     
     def close(self):
         """Cleanup resources"""
         if self.owns_serial:
-            self.serial_comm.close()
+            with self._io_lock:
+                self.serial_comm.close()

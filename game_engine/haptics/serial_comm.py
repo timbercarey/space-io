@@ -30,6 +30,10 @@ class SerialComm:
             1: {'steering': 0, 'throttle': 0},
             2: {'steering': 0, 'throttle': 0}
         }
+        self.throttle_zero_offsets = {
+            1: 0,
+            2: 0
+        }
         
         if not simulation_mode:
             self._connect()
@@ -64,6 +68,11 @@ class SerialComm:
         if self.simulation_mode or not self.connected:
             return
         
+        p1_steer *= Config.STEERING_FORCE_DIRECTION
+        p1_throttle *= Config.THROTTLE_FORCE_DIRECTION
+        p2_steer *= Config.STEERING_FORCE_DIRECTION
+        p2_throttle *= Config.THROTTLE_FORCE_DIRECTION
+
         # Format: F,P1S,P1T,P2S,P2T\n
         message = f"F,{int(p1_steer)},{int(p1_throttle)},{int(p2_steer)},{int(p2_throttle)}\n"
         
@@ -116,10 +125,16 @@ class SerialComm:
             p2_steer_counts = int(parts[3])
             p2_throttle_counts = int(parts[4])
             
-            p1_steer = self._normalize_encoder_counts(p1_steer_counts)
-            p1_throttle = self._normalize_encoder_counts(p1_throttle_counts)
-            p2_steer = self._normalize_encoder_counts(p2_steer_counts)
-            p2_throttle = self._normalize_encoder_counts(p2_throttle_counts)
+            p1_steer = self._normalize_encoder_counts(p1_steer_counts, 'steering')
+            p1_throttle = self._normalize_encoder_counts(
+                p1_throttle_counts - self.throttle_zero_offsets[1],
+                'throttle'
+            )
+            p2_steer = self._normalize_encoder_counts(p2_steer_counts, 'steering')
+            p2_throttle = self._normalize_encoder_counts(
+                p2_throttle_counts - self.throttle_zero_offsets[2],
+                'throttle'
+            )
             
             # Update latest raw counts
             self.latest_encoder_counts[1]['steering'] = p1_steer_counts
@@ -137,14 +152,39 @@ class SerialComm:
             # Ignore malformed data
             pass
 
-    def _normalize_encoder_counts(self, counts):
+    def _normalize_encoder_counts(self, counts, axis):
         """Convert raw encoder counts to normalized controller position."""
-        max_counts = Config.ENCODER_COUNTS_PER_ROTATION * Config.CONTROL_ROTATION_RANGE
+        if axis == 'steering':
+            counts_per_rotation = Config.STEERING_ENCODER_COUNTS_PER_ROTATION
+            control_rotation_range = Config.STEERING_CONTROL_ROTATION_RANGE
+            direction = Config.STEERING_ENCODER_DIRECTION
+        else:
+            counts_per_rotation = Config.THROTTLE_ENCODER_COUNTS_PER_ROTATION
+            control_rotation_range = Config.THROTTLE_CONTROL_ROTATION_RANGE
+            direction = Config.THROTTLE_ENCODER_DIRECTION
+
+        max_counts = counts_per_rotation * control_rotation_range
         if max_counts <= 0:
             return 0.0
 
-        normalized = counts / max_counts
+        normalized = direction * counts / max_counts
         return max(-1.0, min(1.0, normalized))
+
+    def zero_throttle(self, player_ids=None):
+        """Use the current raw throttle count as zero for selected players."""
+        if player_ids is None:
+            player_ids = self.latest_encoder_counts.keys()
+
+        for player_id in player_ids:
+            if player_id not in self.latest_encoder_counts:
+                continue
+
+            self.throttle_zero_offsets[player_id] = (
+                self.latest_encoder_counts[player_id]['throttle']
+            )
+            self.latest_positions[player_id]['throttle'] = 0.0
+        
+        return self.throttle_zero_offsets.copy()
     
     def close(self):
         """Close serial connection"""

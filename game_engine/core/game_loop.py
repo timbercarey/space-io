@@ -20,6 +20,7 @@ class GameLoop:
         self.force_calculator = force_calculator
         self.force_visualizer = force_visualizer
         self.clock = pygame.time.Clock()
+        self.return_to_menu = False
     
     def run(self):
         """Main game loop"""
@@ -31,25 +32,27 @@ class GameLoop:
             # Handle events
             self._handle_events()
             
-            if not self.game_state.paused:
-                # Update input
-                self.controller.update()
-                
-                # Update game state
-                self._update(dt)
-                
-                # Check collisions
-                self._check_collisions()
-                
-                # Update haptics
-                if self.force_calculator:
-                    self.force_calculator.update(dt)
+            # Update input
+            self.controller.update()
+            
+            # Update game state
+            self._update(dt)
+            
+            # Check collisions
+            self._check_collisions()
+            
+            # Update haptics
+            if self.force_calculator:
+                self.force_calculator.update(dt, self.game_state, self.controller)
             
             # Render
             self._render()
         
         # Cleanup
+        if self.force_calculator and hasattr(self.force_calculator, 'close'):
+            self.force_calculator.close()
         self.controller.close()
+        return "menu" if self.return_to_menu else "quit"
     
     def _handle_events(self):
         """Handle pygame events"""
@@ -60,21 +63,26 @@ class GameLoop:
                 if event.key == pygame.K_ESCAPE:
                     self.game_state.running = False
                 elif event.key == pygame.K_SPACE:
-                    self.game_state.paused = not self.game_state.paused
+                    if self.game_state.game_over:
+                        if self._is_round_over_pending_next_round():
+                            self.game_state.start_new_round()
+                        else:
+                            self.return_to_menu = True
+                            self.game_state.running = False
                 elif event.key == pygame.K_r:
                     self.game_state.reset()
-                elif event.key == pygame.K_n:
-                    # Start new round (two-player)
-                    if self.game_state.num_players == 2 and self.game_state.game_over:
-                        if not self.game_state.start_new_round():
-                            # Match is over, full reset
-                            self.game_state.reset()
                 elif event.key == pygame.K_h:
                     # Toggle haptic visualization
                     Config.SHOW_HAPTIC_PANEL = not Config.SHOW_HAPTIC_PANEL
                 elif event.key == pygame.K_b:
                     # Toggle hitbox display
                     Config.SHOW_HITBOXES = not Config.SHOW_HITBOXES
+                elif event.key == pygame.K_z:
+                    # Calibrate current throttle position as zero
+                    if hasattr(self.controller, 'zero_throttle'):
+                        player_ids = list(self.game_state.ships.keys())
+                        self.controller.zero_throttle(player_ids)
+                        print("Throttle zeroed")
     
     def _update(self, dt):
         """Update game state"""
@@ -114,7 +122,8 @@ class GameLoop:
                 if star.check_collision(ship.position, Config.SHIP_SIZE):
                     star.collect()
                     ship.activate_boost()
-                    self.game_state.scores[player_id] += 100
+                    if self.game_state.num_players == 1:
+                        self.game_state.scores[player_id] += 100
                     # Respawn star after collection
                     self.game_state.respawn_star(i)
             
@@ -261,50 +270,73 @@ class GameLoop:
         if self.force_visualizer and Config.SHOW_HAPTIC_PANEL:
             self.force_visualizer.render(self.force_calculator, self.controller, self.game_state)
         
-        # Show pause message if paused
-        if self.game_state.paused:
-            self.renderer.render_text("PAUSED", 
-                (Config.WINDOW_WIDTH // 2 - 80, Config.WINDOW_HEIGHT // 2),
-                (255, 255, 255))
-    
         # Show game over message
         if self.game_state.game_over:
-            if self.game_state.num_players == 2:
-                # Two-player game over
-                match_winner = self.game_state.get_match_winner()
-                
-                if match_winner:
-                    # Match is completely over
-                    winner_color = Config.SHIP_COLOR_P1 if match_winner == 1 else Config.SHIP_COLOR_P2
-                    self.renderer.render_text_centered(
-                        f"Player {match_winner} WINS THE GAME!",
-                        Config.WINDOW_HEIGHT // 2 - 30,
-                        winner_color
-                    )
-                    self.renderer.render_text_centered(
-                        "Press R to play again",
-                        Config.WINDOW_HEIGHT // 2 + 10,
-                        (200, 200, 200)
-                    )
-                else:
-                    # Round over, but match continues
-                    winner_color = Config.SHIP_COLOR_P1 if self.game_state.winner == 1 else Config.SHIP_COLOR_P2
-                    self.renderer.render_text_centered(
-                        f"Player {self.game_state.winner} wins round {self.game_state.round_number}!",
-                        Config.WINDOW_HEIGHT // 2 - 30,
-                        winner_color
-                    )
-                    self.renderer.render_text_centered(
-                        "Press N for next round, R to restart game",
-                        Config.WINDOW_HEIGHT // 2 + 10,
-                        (200, 200, 200)
-                    )
+            if self._is_round_over_pending_next_round():
+                self._render_round_over_message()
             else:
-                # Single player game over
-                self.renderer.render_text_centered(
-                    "GAME OVER - Press R to restart",
-                    Config.WINDOW_HEIGHT // 2,
-                    (255, 0, 0)
-                )
+                self._render_game_over_message()
             
         pygame.display.flip()
+
+    def _is_round_over_pending_next_round(self):
+        """Check whether 2P game over is only a round break, not match over."""
+        return (
+            self.game_state.num_players == 2
+            and self.game_state.game_over
+            and self.game_state.get_match_winner() is None
+        )
+
+    def _render_round_over_message(self):
+        """Render between-round prompt for two-player mode."""
+        font = pygame.font.Font(None, 48)
+        small_font = pygame.font.Font(None, 32)
+
+        score_y = Config.WINDOW_HEIGHT // 2 - 55
+        self._render_match_score(font, score_y)
+
+        prompt_surface = small_font.render("Press SPACEBAR for next round", True, (220, 220, 220))
+        prompt_x = (Config.WINDOW_WIDTH - prompt_surface.get_width()) // 2
+        prompt_y = score_y + font.get_height() + 10
+        self.renderer.screen.blit(prompt_surface, (prompt_x, prompt_y))
+
+    def _render_game_over_message(self):
+        """Render game-over overlay."""
+        title_font = pygame.font.Font(None, 96)
+        font = pygame.font.Font(None, 42)
+        small_font = pygame.font.Font(None, 32)
+
+        title_surface = title_font.render("GAME OVER", True, (255, 60, 60))
+        title_x = (Config.WINDOW_WIDTH - title_surface.get_width()) // 2
+        title_y = Config.WINDOW_HEIGHT // 2 - 110
+        self.renderer.screen.blit(title_surface, (title_x, title_y))
+
+        next_y = title_y + title_surface.get_height() + 8
+        if self.game_state.num_players == 2:
+            winner = self.game_state.get_match_winner() or self.game_state.winner
+            if winner:
+                winner_color = Config.SHIP_COLOR_P1 if winner == 1 else Config.SHIP_COLOR_P2
+                winner_surface = font.render(f"Player {winner} wins", True, winner_color)
+                winner_x = (Config.WINDOW_WIDTH - winner_surface.get_width()) // 2
+                self.renderer.screen.blit(winner_surface, (winner_x, next_y))
+                next_y += winner_surface.get_height() + 8
+
+        prompt_surface = small_font.render("Press SPACEBAR to return to menu", True, (220, 220, 220))
+        prompt_x = (Config.WINDOW_WIDTH - prompt_surface.get_width()) // 2
+        self.renderer.screen.blit(prompt_surface, (prompt_x, next_y))
+
+    def _render_match_score(self, font, y):
+        """Render 2P round score with player-colored values."""
+        parts = [
+            ("Score: ", (235, 235, 235)),
+            (str(self.game_state.kills[1]), Config.SHIP_COLOR_P1),
+            (" - ", (235, 235, 235)),
+            (str(self.game_state.kills[2]), Config.SHIP_COLOR_P2),
+        ]
+        surfaces = [font.render(text, True, color) for text, color in parts]
+        total_width = sum(surface.get_width() for surface in surfaces)
+        x = (Config.WINDOW_WIDTH - total_width) // 2
+
+        for surface in surfaces:
+            self.renderer.screen.blit(surface, (x, y))
+            x += surface.get_width()
