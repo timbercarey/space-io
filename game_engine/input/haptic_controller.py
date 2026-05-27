@@ -29,6 +29,7 @@ class HapticController(Controller):
         
         # Current input values
         self.positions = self.serial_comm.latest_positions
+        self.velocities = self.serial_comm.latest_velocities
     
     def update(self):
         """Read latest positions from hardware"""
@@ -44,6 +45,21 @@ class HapticController(Controller):
                 player_id: axes.copy()
                 for player_id, axes in self.positions.items()
             }
+
+    def get_position_velocity_snapshot(self, refresh=False):
+        """Return hardware positions and Teensy-calculated velocities together."""
+        with self._io_lock:
+            initialized, positions, velocities = (
+                self.serial_comm.get_position_velocity_snapshot(refresh=refresh)
+            )
+            self.positions = positions
+            self.velocities = velocities
+            return initialized, positions, velocities
+
+    def has_hardware_velocity_data(self):
+        """Return True once the serial stream has included Teensy velocity data."""
+        with self._io_lock:
+            return self.serial_comm.has_hardware_velocity_data()
     
     def get_steering(self, player_id):
         """

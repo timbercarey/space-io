@@ -36,7 +36,7 @@ forwards motor commands, and the Hapkit board drives the motors.
 
    ```python
    SERIAL_PORT = '/dev/cu.usbmodem199646501'
-   BAUD_RATE = 115200
+   BAUD_RATE = 1000000
    SIMULATION_MODE = False
    ```
 
@@ -63,7 +63,8 @@ current sketch from the repo.
 4. Select the Teensy serial port.
 5. Click Upload.
 
-The Teensy reads encoder counts and sends them to the laptop at `115200` baud.
+The Teensy reads encoder counts, calculates encoder velocities, and sends both
+to the laptop at `1000000` baud.
 
 ### Hapkit Board
 
@@ -132,17 +133,17 @@ send force commands.
 
 1. Upload `teensy_controller/teensy_controller.ino`.
 2. Open Arduino IDE Serial Monitor.
-3. Set the baud rate to `115200`.
+3. Set the baud rate to `1000000`.
 4. Rotate each encoder and watch for lines like:
 
    ```text
-   P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS
+   P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS,P1_STEER_VEL,P1_THROTTLE_VEL,P2_STEER_VEL,P2_THROTTLE_VEL
    ```
 
    Example:
 
    ```text
-   P,1500,-300,0,0
+   P,1500,-300,0,0,1240.50,-210.00,0.00,0.00
    ```
 
 5. To send a force command from Serial Monitor, send:

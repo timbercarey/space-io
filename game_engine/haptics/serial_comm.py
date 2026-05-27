@@ -26,6 +26,11 @@ class SerialComm:
             1: {'steering': 0.0, 'throttle': 0.0},
             2: {'steering': 0.0, 'throttle': 0.0}
         }
+        self.latest_velocities = {
+            1: {'steering': 0.0, 'throttle': 0.0},
+            2: {'steering': 0.0, 'throttle': 0.0}
+        }
+        self.has_velocity_data = False
         self.latest_encoder_counts = {
             1: {'steering': 0, 'throttle': 0},
             2: {'steering': 0, 'throttle': 0}
@@ -84,7 +89,7 @@ class SerialComm:
     
     def read_positions(self):
         """
-        Read encoder positions from Teensy
+        Read encoder positions and velocities from Teensy
         
         Returns:
             dict: {player_id: {'steering': float, 'throttle': float}}
@@ -111,12 +116,15 @@ class SerialComm:
         """
         Parse position data from Teensy
         
-        Expected format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS
-        Example: P,2000,-1200,0,0
+        Expected format:
+        P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL
+
+        The older position-only format is still accepted:
+        P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS
         """
         try:
             parts = line.split(',')
-            if parts[0] != 'P' or len(parts) != 5:
+            if parts[0] != 'P' or len(parts) not in (5, 9):
                 return
             
             # Parse raw encoder counts
@@ -135,6 +143,30 @@ class SerialComm:
                 p2_throttle_counts - self.throttle_zero_offsets[2],
                 'throttle'
             )
+
+            p1_steer_velocity = self.latest_velocities[1]['steering']
+            p1_throttle_velocity = self.latest_velocities[1]['throttle']
+            p2_steer_velocity = self.latest_velocities[2]['steering']
+            p2_throttle_velocity = self.latest_velocities[2]['throttle']
+
+            if len(parts) == 9:
+                self.has_velocity_data = True
+                p1_steer_velocity = self._normalize_encoder_velocity(
+                    float(parts[5]),
+                    'steering'
+                )
+                p1_throttle_velocity = self._normalize_encoder_velocity(
+                    float(parts[6]),
+                    'throttle'
+                )
+                p2_steer_velocity = self._normalize_encoder_velocity(
+                    float(parts[7]),
+                    'steering'
+                )
+                p2_throttle_velocity = self._normalize_encoder_velocity(
+                    float(parts[8]),
+                    'throttle'
+                )
             
             # Update latest raw counts
             self.latest_encoder_counts[1]['steering'] = p1_steer_counts
@@ -147,6 +179,11 @@ class SerialComm:
             self.latest_positions[1]['throttle'] = p1_throttle
             self.latest_positions[2]['steering'] = p2_steer
             self.latest_positions[2]['throttle'] = p2_throttle
+
+            self.latest_velocities[1]['steering'] = p1_steer_velocity
+            self.latest_velocities[1]['throttle'] = p1_throttle_velocity
+            self.latest_velocities[2]['steering'] = p2_steer_velocity
+            self.latest_velocities[2]['throttle'] = p2_throttle_velocity
             
         except (ValueError, IndexError):
             # Ignore malformed data
@@ -169,6 +206,44 @@ class SerialComm:
 
         normalized = direction * counts / max_counts
         return max(-1.0, min(1.0, normalized))
+
+    def _normalize_encoder_velocity(self, counts_per_second, axis):
+        """Convert raw encoder counts/sec to normalized controller units/sec."""
+        if axis == 'steering':
+            counts_per_rotation = Config.STEERING_ENCODER_COUNTS_PER_ROTATION
+            control_rotation_range = Config.STEERING_CONTROL_ROTATION_RANGE
+            direction = Config.STEERING_ENCODER_DIRECTION
+        else:
+            counts_per_rotation = Config.THROTTLE_ENCODER_COUNTS_PER_ROTATION
+            control_rotation_range = Config.THROTTLE_CONTROL_ROTATION_RANGE
+            direction = Config.THROTTLE_ENCODER_DIRECTION
+
+        max_counts = counts_per_rotation * control_rotation_range
+        if max_counts <= 0:
+            return 0.0
+
+        return direction * counts_per_second / max_counts
+
+    def get_position_velocity_snapshot(self, refresh=False):
+        """Return copies of the latest hardware positions and velocities."""
+        if refresh:
+            self.read_positions()
+
+        return (
+            self.has_velocity_data,
+            {
+                player_id: axes.copy()
+                for player_id, axes in self.latest_positions.items()
+            },
+            {
+                player_id: axes.copy()
+                for player_id, axes in self.latest_velocities.items()
+            }
+        )
+
+    def has_hardware_velocity_data(self):
+        """Return True after receiving at least one velocity-bearing packet."""
+        return self.has_velocity_data
 
     def zero_throttle(self, player_ids=None):
         """Use the current raw throttle count as zero for selected players."""

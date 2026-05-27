@@ -55,8 +55,8 @@ class Config:
     
     # === Haptics Settings ===
     SERIAL_PORT = '/dev/cu.usbmodem199646501'  # Change to 'COM3' on Windows
-    BAUD_RATE = 115200
-    SIMULATION_MODE = True  # Set to False when hardware is connected
+    BAUD_RATE = 1000000
+    SIMULATION_MODE = False  # Set to False when hardware is connected
     SHOW_HAPTIC_PANEL = True  # Set to False to hide haptic visualization panels
     SHOW_KNOB_VELOCITY_PLOT = True
     GENERATE_HAPTIC_DEBUG_PLOTS = False
@@ -82,7 +82,7 @@ class Config:
     # Throttle velocity damping
     THROTTLE_VELOCITY_DAMPING = 120.0
     # Steering velocity damping
-    STEERING_VELOCITY_DAMPING = 600.0
+    STEERING_VELOCITY_DAMPING = 120.0
     KNOB_VELOCITY_THREAD_FREQUENCY_HZ = 1000.0
     KNOB_VELOCITY_FILTER_ALPHA = 0.45
     KNOB_VELOCITY_MIN_SAMPLE_INTERVAL_SEC = 0.006
@@ -102,14 +102,17 @@ class Config:
     DAMPING_SPEED_THRESHOLD = MAX_SPEED * 0.8
 
     # Virtual walls limit centered knob motion
+    HAPTIC_MODE_OFF = "off"
+    HAPTIC_MODE_SPRING_ONLY = "spring_only"
+    HAPTIC_MODE_DAMPER_ONLY = "damper_only"
     HAPTIC_MODE_VIRTUAL_WALLS = "virtual_walls"
     HAPTIC_MODE_SPRING_DAMPER = "spring_damper"
     HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS = "spring_damper_with_walls"
     # Steering
-    STEERING_HAPTIC_MODE = HAPTIC_MODE_SPRING_DAMPER
+    STEERING_HAPTIC_MODE = HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
     STEERING_MOTION_RANGE_DEG = 270.0
-    STEERING_VIRTUAL_WALL_STIFFNESS = 2500.0
-    STEERING_CENTERING_SPRING_STIFFNESS = 300.0
+    STEERING_VIRTUAL_WALL_STIFFNESS = 8000.0
+    STEERING_CENTERING_SPRING_STIFFNESS = 1000.0
     # Throttle
     THROTTLE_HAPTIC_MODE_VIRTUAL_WALLS = HAPTIC_MODE_VIRTUAL_WALLS
     THROTTLE_HAPTIC_MODE_SPRING_DAMPER = HAPTIC_MODE_SPRING_DAMPER

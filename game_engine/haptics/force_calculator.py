@@ -25,6 +25,18 @@ class ForceCalculator:
             2: {'steering': 0.0, 'throttle': 0.0}
         }
         self.velocity_estimator = AxisVelocityEstimator()
+        self.using_hardware_velocity = False
+        self._latest_position_velocity_snapshot = (
+            False,
+            {
+                1: {'steering': 0.0, 'throttle': 0.0},
+                2: {'steering': 0.0, 'throttle': 0.0}
+            },
+            {
+                1: {'steering': 0.0, 'throttle': 0.0},
+                2: {'steering': 0.0, 'throttle': 0.0}
+            }
+        )
         self._lock = threading.RLock()
     
     def update(self, dt, game_state=None, controller=None):
@@ -38,7 +50,7 @@ class ForceCalculator:
                 self.vibration_phase[player_id] += dt
 
             if controller:
-                self._start_velocity_estimator(controller)
+                self._start_velocity_source(controller)
                 self._refresh_axis_velocities()
 
     def close(self):
@@ -74,25 +86,25 @@ class ForceCalculator:
 
             # 1. Baseline axis forces.
             if controller:
-                has_estimator_snapshot, positions, velocities = (
-                    self.velocity_estimator.get_position_velocity_snapshot()
+                has_velocity_snapshot, positions, velocities = (
+                    self._get_position_velocity_snapshot(controller)
                 )
-                if has_estimator_snapshot:
-                    estimator_positions = positions.get(player_id, {})
-                    estimator_velocities = velocities.get(player_id, {})
-                    steering_position = estimator_positions.get(
+                if has_velocity_snapshot:
+                    velocity_positions = positions.get(player_id, {})
+                    velocity_values = velocities.get(player_id, {})
+                    steering_position = velocity_positions.get(
                         'steering',
                         controller.get_steering(player_id)
                     )
-                    throttle_position = estimator_positions.get(
+                    throttle_position = velocity_positions.get(
                         'throttle',
                         controller.get_throttle(player_id)
                     )
-                    self.axis_velocities[player_id]['steering'] = estimator_velocities.get(
+                    self.axis_velocities[player_id]['steering'] = velocity_values.get(
                         'steering',
                         self.axis_velocities[player_id]['steering']
                     )
-                    self.axis_velocities[player_id]['throttle'] = estimator_velocities.get(
+                    self.axis_velocities[player_id]['throttle'] = velocity_values.get(
                         'throttle',
                         self.axis_velocities[player_id]['throttle']
                     )
@@ -132,6 +144,23 @@ class ForceCalculator:
         """Calculate the selected steering force model before event effects."""
         mode = Config.STEERING_HAPTIC_MODE
 
+        if mode == Config.HAPTIC_MODE_OFF:
+            return 0.0
+
+        if mode == Config.HAPTIC_MODE_SPRING_ONLY:
+            return self._calculate_centering_spring(
+                steering_position,
+                Config.STEERING_CENTERING_SPRING_STIFFNESS
+            )
+
+        if mode == Config.HAPTIC_MODE_DAMPER_ONLY:
+            return self._calculate_knob_damping(
+                ship,
+                player_id,
+                'steering',
+                Config.STEERING_VELOCITY_DAMPING
+            )
+
         if mode == Config.HAPTIC_MODE_SPRING_DAMPER:
             spring = self._calculate_centering_spring(
                 steering_position,
@@ -160,11 +189,47 @@ class ForceCalculator:
             )
             return wall + damping
 
+        if mode == Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS:
+            spring = self._calculate_centering_spring(
+                steering_position,
+                Config.STEERING_CENTERING_SPRING_STIFFNESS
+            )
+            damping = self._calculate_knob_damping(
+                ship,
+                player_id,
+                'steering',
+                Config.STEERING_VELOCITY_DAMPING
+            )
+            wall = self._calculate_virtual_wall(
+                steering_position,
+                Config.STEERING_MOTION_RANGE_DEG,
+                Config.STEERING_CONTROL_ROTATION_RANGE,
+                Config.STEERING_VIRTUAL_WALL_STIFFNESS
+            )
+            return spring + damping + wall
+
         raise ValueError(f"Unknown steering haptic mode: {mode}")
 
     def _calculate_throttle_baseline_force(self, ship, player_id, throttle_position):
         """Calculate the selected throttle force model before event effects."""
         mode = Config.THROTTLE_HAPTIC_MODE
+
+        if mode == Config.HAPTIC_MODE_OFF:
+            return 0.0
+
+        if mode == Config.HAPTIC_MODE_SPRING_ONLY:
+            return self._calculate_centering_spring(
+                throttle_position,
+                Config.THROTTLE_CENTERING_SPRING_STIFFNESS
+            )
+
+        if mode == Config.HAPTIC_MODE_DAMPER_ONLY:
+            return self._calculate_knob_damping(
+                ship,
+                player_id,
+                'throttle',
+                Config.THROTTLE_VELOCITY_DAMPING
+            )
 
         if mode == Config.THROTTLE_HAPTIC_MODE_SPRING_DAMPER:
             return self._calculate_throttle_spring_damper_force(
@@ -343,8 +408,21 @@ class ForceCalculator:
 
         return rear_limit, forward_limit
 
-    def _start_velocity_estimator(self, controller):
-        """Start the high-rate velocity worker with the best available sampler."""
+    def _start_velocity_source(self, controller):
+        """Use hardware velocity when available, otherwise start the host estimator."""
+        has_hardware_velocity = (
+            hasattr(controller, 'get_position_velocity_snapshot')
+            and (
+                not hasattr(controller, 'has_hardware_velocity_data')
+                or controller.has_hardware_velocity_data()
+            )
+        )
+        if has_hardware_velocity:
+            self.using_hardware_velocity = True
+            self.velocity_estimator.stop()
+            return
+
+        self.using_hardware_velocity = False
         if hasattr(controller, 'get_positions_snapshot'):
             self.velocity_estimator.start(
                 lambda: controller.get_positions_snapshot(refresh=False)
@@ -362,7 +440,10 @@ class ForceCalculator:
         )
 
     def _refresh_axis_velocities(self):
-        """Query the velocity thread and copy its thread-safe snapshot."""
+        """Query the velocity source and copy its thread-safe snapshot."""
+        if self.using_hardware_velocity:
+            return
+
         self.axis_velocities = self.velocity_estimator.get_velocities()
 
     def get_axis_velocity(self, player_id, axis):
@@ -371,8 +452,24 @@ class ForceCalculator:
             return self.axis_velocities.get(player_id, {}).get(axis, 0.0)
 
     def get_axis_position_velocity_snapshot(self):
-        """Return estimator positions and velocities from the same sample."""
+        """Return positions and velocities from the active velocity source."""
+        if self.using_hardware_velocity:
+            return self._latest_position_velocity_snapshot
+
         return self.velocity_estimator.get_position_velocity_snapshot()
+
+    def _get_position_velocity_snapshot(self, controller):
+        """Return hardware or host-estimated position/velocity data."""
+        if self.using_hardware_velocity and hasattr(controller, 'get_position_velocity_snapshot'):
+            self._latest_position_velocity_snapshot = (
+                controller.get_position_velocity_snapshot(refresh=False)
+            )
+            return self._latest_position_velocity_snapshot
+
+        self._latest_position_velocity_snapshot = (
+            self.velocity_estimator.get_position_velocity_snapshot()
+        )
+        return self._latest_position_velocity_snapshot
 
     def _calculate_knob_damping(self, ship, player_id, axis, damping_coefficient):
         """Calculate damping force from filtered knob velocity."""

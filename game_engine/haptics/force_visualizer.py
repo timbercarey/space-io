@@ -107,7 +107,10 @@ class ForceVisualizer:
         throttle_input = controller.get_throttle(player_id)
 
         steering_wall_markers = []
-        if Config.STEERING_HAPTIC_MODE == Config.HAPTIC_MODE_VIRTUAL_WALLS:
+        if Config.STEERING_HAPTIC_MODE in (
+            Config.HAPTIC_MODE_VIRTUAL_WALLS,
+            Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
+        ):
             steering_wall_markers = self._get_wall_markers(
                 Config.STEERING_MOTION_RANGE_DEG,
                 Config.STEERING_CONTROL_ROTATION_RANGE
@@ -286,9 +289,13 @@ class ForceVisualizer:
             force_calculator,
             steering_position
         )
+        wall_force = self._calculate_active_steering_wall_force(
+            force_calculator,
+            steering_position
+        )
 
         history = self.steering_force_component_history.setdefault(player_id, [])
-        history.append((now, damping_force, spring_force))
+        history.append((now, damping_force, spring_force, wall_force))
         cutoff = now - window_sec
         while history and history[0][0] < cutoff:
             history.pop(0)
@@ -321,7 +328,13 @@ class ForceVisualizer:
 
         damping_points = []
         spring_points = []
-        for sample_time, sample_damping, sample_spring in history:
+        wall_points = []
+        for sample in history:
+            if len(sample) == 3:
+                sample_time, sample_damping, sample_spring = sample
+                sample_wall = 0.0
+            else:
+                sample_time, sample_damping, sample_spring, sample_wall = sample
             time_fraction = (sample_time - cutoff) / window_sec
             px = plot_rect.left + int(max(0.0, min(1.0, time_fraction)) * plot_rect.width)
             damping_points.append((
@@ -332,22 +345,47 @@ class ForceVisualizer:
                 px,
                 self._force_to_plot_y(sample_spring, force_limit, plot_rect)
             ))
+            wall_points.append((
+                px,
+                self._force_to_plot_y(sample_wall, force_limit, plot_rect)
+            ))
 
         damping_color = (120, 210, 255)
         spring_color = (255, 210, 100)
+        wall_color = (255, 120, 120)
         self._draw_plot_line(damping_points, damping_color)
         self._draw_plot_line(spring_points, spring_color)
+        self._draw_plot_line(wall_points, wall_color)
 
         range_text = self.small_font.render(f"+/- {force_limit:.0f}", True, (150, 150, 150))
         self.screen.blit(range_text, (plot_rect.left, plot_rect.bottom + 2))
         damping_text = self.small_font.render(f"damp {damping_force:+.0f}", True, damping_color)
-        self.screen.blit(damping_text, (plot_rect.centerx - damping_text.get_width() - 8, plot_rect.bottom + 2))
+        self.screen.blit(damping_text, (plot_rect.left + 56, plot_rect.bottom + 2))
         spring_text = self.small_font.render(f"spring {spring_force:+.0f}", True, spring_color)
-        self.screen.blit(spring_text, (plot_rect.centerx + 8, plot_rect.bottom + 2))
+        self.screen.blit(spring_text, (plot_rect.centerx - 16, plot_rect.bottom + 2))
+        wall_text = self.small_font.render(f"wall {wall_force:+.0f}", True, wall_color)
+        self.screen.blit(wall_text, (plot_rect.right - wall_text.get_width(), plot_rect.bottom + 2))
 
     def _calculate_active_steering_spring_force(self, force_calculator, steering_position):
         """Return the steering spring component active in the selected steering mode."""
-        if Config.STEERING_HAPTIC_MODE == Config.HAPTIC_MODE_VIRTUAL_WALLS:
+        if Config.STEERING_HAPTIC_MODE in (
+            Config.HAPTIC_MODE_OFF,
+            Config.HAPTIC_MODE_DAMPER_ONLY,
+            Config.HAPTIC_MODE_VIRTUAL_WALLS
+        ):
+            return 0.0
+
+        return force_calculator._calculate_centering_spring(
+            steering_position,
+            Config.STEERING_CENTERING_SPRING_STIFFNESS
+        )
+
+    def _calculate_active_steering_wall_force(self, force_calculator, steering_position):
+        """Return the steering wall component active in the selected steering mode."""
+        if Config.STEERING_HAPTIC_MODE in (
+            Config.HAPTIC_MODE_VIRTUAL_WALLS,
+            Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
+        ):
             return force_calculator._calculate_virtual_wall(
                 steering_position,
                 Config.STEERING_MOTION_RANGE_DEG,
@@ -355,10 +393,7 @@ class ForceVisualizer:
                 Config.STEERING_VIRTUAL_WALL_STIFFNESS
             )
 
-        return force_calculator._calculate_centering_spring(
-            steering_position,
-            Config.STEERING_CENTERING_SPRING_STIFFNESS
-        )
+        return 0.0
 
     def _force_to_plot_y(self, force, force_limit, plot_rect):
         normalized_force = max(-1.0, min(1.0, force / force_limit))

@@ -1,14 +1,15 @@
 # Teensy 4.1 Controller
 
-Reads the controller encoders on the Teensy, sends raw encoder counts to the
-laptop, and forwards player 1 force commands to the Hapkit motor board.
+Reads the controller encoders on the Teensy, sends raw encoder counts and
+filtered encoder velocities to the laptop, and forwards player 1 force commands
+to the Hapkit motor board.
 
 ## Hardware Connections
 
 ### Laptop
 
 - USB cable to Teensy 4.1
-- Baud rate: `115200`
+- Baud rate: `1000000`
 
 ### Encoders
 
@@ -48,6 +49,19 @@ steering, so the Teensy swaps the game force order before sending the packet.
 4. Select Tools -> USB Type -> Serial.
 5. Click Upload.
 
+You can also compile from the repo root:
+
+```bash
+make teensy-compile
+```
+
+To upload from the command line, connect the Teensy, find its Teensy discovery
+port with `make teensy-board-list`, then run:
+
+```bash
+make teensy-upload TEENSY_PORT=usb:...
+```
+
 ## Message Protocol
 
 ### From Laptop To Teensy
@@ -67,23 +81,24 @@ Force values are clamped to `-1000..1000`.
 ### From Teensy To Laptop
 
 ```text
-P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS\n
+P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS,P1_STEER_VEL,P1_THROTTLE_VEL,P2_STEER_VEL,P2_THROTTLE_VEL\n
 ```
 
 Example:
 
 ```text
-P,1500,-300,0,0
+P,1500,-300,0,0,1240.50,-210.00,0.00,0.00
 ```
 
-Encoder values are raw counts. The Python game normalizes them using
+Encoder positions are raw counts. Encoder velocities are filtered counts per
+second. The Python game normalizes both using
 `STEERING_ENCODER_COUNTS_PER_ROTATION`,
 `THROTTLE_ENCODER_COUNTS_PER_ROTATION`,
 `STEERING_CONTROL_ROTATION_RANGE`, and `THROTTLE_CONTROL_ROTATION_RANGE`.
 
 ## Testing
 
-Open Serial Monitor at `115200` baud. You should see:
+Open Serial Monitor at `1000000` baud. You should see:
 
 ```text
 Teensy Controller Ready

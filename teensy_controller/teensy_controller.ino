@@ -1,18 +1,21 @@
 /*
  * Space IO - Teensy 4.1 Controller
  *
- * Reads four hardware quadrature encoder channels, reports raw counts to the
- * laptop, and forwards player 1 force commands to the Hapkit motor board.
+ * Reads four hardware quadrature encoder channels, reports raw counts and
+ * calculated velocities to the laptop, and forwards player 1 force commands to
+ * the Hapkit motor board.
  *
  * Message Format:
  *   FROM LAPTOP: F,P1S,P1T,P2S,P2T\n
- *   TO LAPTOP:   P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS\n
+ *   TO LAPTOP:   P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL\n
  *
  * Force values are integers (-1000 to 1000). Encoder positions are raw counts.
+ * Encoder velocities are filtered counts per second.
  */
 
 #include "config.h"
 #include "QuadEncoder.h"
+#include <math.h>
 
 #define LAPTOP_SERIAL Serial
 #define BUFFER_SIZE 128
@@ -46,6 +49,16 @@ long p1ThrottleCounts = 0;
 long p2SteeringCounts = 0;
 long p2ThrottleCounts = 0;
 
+long previousP1SteeringCounts = 0;
+long previousP1ThrottleCounts = 0;
+long previousP2SteeringCounts = 0;
+long previousP2ThrottleCounts = 0;
+
+float p1SteeringVelocity = 0.0f;
+float p1ThrottleVelocity = 0.0f;
+float p2SteeringVelocity = 0.0f;
+float p2ThrottleVelocity = 0.0f;
+
 int p1SteeringForce = 0;
 int p1ThrottleForce = 0;
 
@@ -56,8 +69,8 @@ const unsigned long CONTROL_UPDATE_INTERVAL_US = 1000000UL / CONTROL_UPDATE_RATE
 const unsigned long POSITION_SEND_INTERVAL_MS = 1000UL / POSITION_UPDATE_RATE;
 
 void setup() {
-  LAPTOP_SERIAL.begin(BAUD_RATE);
-  HAPKIT_SERIAL.begin(BAUD_RATE);
+  LAPTOP_SERIAL.begin(LAPTOP_BAUD_RATE);
+  HAPKIT_SERIAL.begin(HAPKIT_BAUD_RATE);
 
   p1SteeringEncoder.setInitConfig();
   p1SteeringEncoder.init();
@@ -68,7 +81,15 @@ void setup() {
   p2ThrottleEncoder.setInitConfig();
   p2ThrottleEncoder.init();
 
+  readEncoders();
+  previousP1SteeringCounts = p1SteeringCounts;
+  previousP1ThrottleCounts = p1ThrottleCounts;
+  previousP2SteeringCounts = p2SteeringCounts;
+  previousP2ThrottleCounts = p2ThrottleCounts;
+
   delay(500);
+  lastControlUpdate = micros();
+  lastPositionSend = millis();
   LAPTOP_SERIAL.println("Teensy Controller Ready");
 }
 
@@ -77,7 +98,7 @@ void loop() {
 
   unsigned long currentMicros = micros();
   if (currentMicros - lastControlUpdate >= CONTROL_UPDATE_INTERVAL_US) {
-    updateControlLoop();
+    updateControlLoop(currentMicros - lastControlUpdate);
     lastControlUpdate = currentMicros;
   }
 
@@ -88,8 +109,9 @@ void loop() {
   }
 }
 
-void updateControlLoop() {
+void updateControlLoop(unsigned long elapsedMicros) {
   readEncoders();
+  updateVelocities(elapsedMicros);
   sendForcesToHapkit(p1SteeringForce, p1ThrottleForce);
 }
 
@@ -98,6 +120,62 @@ void readEncoders() {
   p1ThrottleCounts = p1ThrottleEncoder.read();
   p2SteeringCounts = p2SteeringEncoder.read();
   p2ThrottleCounts = p2ThrottleEncoder.read();
+}
+
+float calculateFilteredVelocity(long currentCounts, long previousCounts, float previousVelocity, float dtSeconds) {
+  if (dtSeconds <= 0.0f) {
+    return previousVelocity;
+  }
+
+  float rawVelocity = (float)(currentCounts - previousCounts) / dtSeconds;
+  if (fabsf(rawVelocity) < VELOCITY_COUNTS_PER_SECOND_DEADBAND) {
+    rawVelocity = 0.0f;
+  }
+
+  float filteredVelocity = (
+    VELOCITY_FILTER_ALPHA * rawVelocity
+    + (1.0f - VELOCITY_FILTER_ALPHA) * previousVelocity
+  );
+
+  if (fabsf(filteredVelocity) < VELOCITY_COUNTS_PER_SECOND_DEADBAND) {
+    return 0.0f;
+  }
+
+  return filteredVelocity;
+}
+
+void updateVelocities(unsigned long elapsedMicros) {
+  float dtSeconds = (float)elapsedMicros / 1000000.0f;
+
+  p1SteeringVelocity = calculateFilteredVelocity(
+    p1SteeringCounts,
+    previousP1SteeringCounts,
+    p1SteeringVelocity,
+    dtSeconds
+  );
+  p1ThrottleVelocity = calculateFilteredVelocity(
+    p1ThrottleCounts,
+    previousP1ThrottleCounts,
+    p1ThrottleVelocity,
+    dtSeconds
+  );
+  p2SteeringVelocity = calculateFilteredVelocity(
+    p2SteeringCounts,
+    previousP2SteeringCounts,
+    p2SteeringVelocity,
+    dtSeconds
+  );
+  p2ThrottleVelocity = calculateFilteredVelocity(
+    p2ThrottleCounts,
+    previousP2ThrottleCounts,
+    p2ThrottleVelocity,
+    dtSeconds
+  );
+
+  previousP1SteeringCounts = p1SteeringCounts;
+  previousP1ThrottleCounts = p1ThrottleCounts;
+  previousP2SteeringCounts = p2SteeringCounts;
+  previousP2ThrottleCounts = p2ThrottleCounts;
 }
 
 void readFromLaptop() {
@@ -174,7 +252,7 @@ byte forceToHapkitCommand(int force) {
 }
 
 void sendPositionsToLaptop() {
-  // Format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS
+  // Format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL
   LAPTOP_SERIAL.print("P,");
   LAPTOP_SERIAL.print(p1SteeringCounts);
   LAPTOP_SERIAL.print(",");
@@ -182,5 +260,13 @@ void sendPositionsToLaptop() {
   LAPTOP_SERIAL.print(",");
   LAPTOP_SERIAL.print(p2SteeringCounts);
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.println(p2ThrottleCounts);
+  LAPTOP_SERIAL.print(p2ThrottleCounts);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(p1SteeringVelocity, 2);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(p1ThrottleVelocity, 2);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(p2SteeringVelocity, 2);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.println(p2ThrottleVelocity, 2);
 }

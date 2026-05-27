@@ -39,8 +39,14 @@
 #define HAPKIT_MAX_REVERSE_COMMAND 0
 
 // Communication settings
-#define BAUD_RATE 115200
+#define LAPTOP_BAUD_RATE 1000000
+#define HAPKIT_BAUD_RATE 115200
+#define BAUD_RATE LAPTOP_BAUD_RATE
 #define POSITION_UPDATE_RATE 500  // Hz
 #define CONTROL_UPDATE_RATE 1000 // Hz
+
+// Encoder velocity settings
+#define VELOCITY_FILTER_ALPHA 0.45f
+#define VELOCITY_COUNTS_PER_SECOND_DEADBAND 1.0f
 
 #endif
