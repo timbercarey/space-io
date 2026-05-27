@@ -40,7 +40,7 @@
 
 // Communication settings
 #define BAUD_RATE 115200
-#define POSITION_UPDATE_RATE 60  // Hz
+#define POSITION_UPDATE_RATE 500  // Hz
 #define CONTROL_UPDATE_RATE 1000 // Hz
 
 #endif

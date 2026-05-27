@@ -56,7 +56,7 @@ class Config:
     # === Haptics Settings ===
     SERIAL_PORT = '/dev/cu.usbmodem199646501'  # Change to 'COM3' on Windows
     BAUD_RATE = 115200
-    SIMULATION_MODE = False  # Set to False when hardware is connected
+    SIMULATION_MODE = True  # Set to False when hardware is connected
     SHOW_HAPTIC_PANEL = True  # Set to False to hide haptic visualization panels
     SHOW_KNOB_VELOCITY_PLOT = True
     GENERATE_HAPTIC_DEBUG_PLOTS = False
