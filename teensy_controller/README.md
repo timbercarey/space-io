@@ -27,6 +27,7 @@ The controller uses the Teensy 4.1 hardware quadrature encoder channels through 
 
 - Module A, 2-way station, logical player 2: Teensy `Serial4` TX, pin 17 -> Hapkit receiver RX
 - Module B, 3-way station, logical player 1: Teensy `Serial7` TX, pin 29 -> Hapkit receiver RX
+- ERM module: Teensy `Serial5` TX, pin 20 -> Hapkit ERM receiver RX
 - Teensy GND -> both Hapkit GND pins
 - Baud rate: `115200`
 
@@ -41,6 +42,13 @@ The current motor command packet is binary:
 
 On the current hardware, Hapkit channel 1 drives throttle and channel 2 drives
 steering, so the Teensy swaps the game force order before sending each packet.
+
+The ERM Hapkit receives a separate binary packet on Teensy pin 20:
+
+```text
+Legacy single-channel: 0xE1,PWM,CHECKSUM
+Dual-channel:          0xE2,ERM1_PWM,ERM2_PWM,CHECKSUM
+```
 
 ### Player Switches And LEDs
 
@@ -116,7 +124,7 @@ print `HIGH(active)`. The P2 switch uses `INPUT_PULLUP`, so pin 9 should print
 ### From Laptop To Teensy
 
 ```text
-F,P1_STEER_FORCE,P1_THROTTLE_FORCE,P2_STEER_FORCE,P2_THROTTLE_FORCE[,LED_MASK]\n
+F,P1_STEER_FORCE,P1_THROTTLE_FORCE,P2_STEER_FORCE,P2_THROTTLE_FORCE[,LED_MASK[,ERM_ENABLE]]\n
 ```
 
 Example:
@@ -128,6 +136,7 @@ F,500,-200,0,0
 Force values are clamped to `-1000..1000`. `LED_MASK` is optional for backward
 compatibility. Its bits are: `1` P1 present, `2` P1 star boost, `4` P1 dead,
 `8` P2 present, `16` P2 star boost, and `32` P2 dead.
+`ERM_ENABLE` is optional and powers the ERM Hapkit outputs when non-zero.
 
 ### From Teensy To Laptop
 

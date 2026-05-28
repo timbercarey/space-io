@@ -2,11 +2,11 @@
  * Space IO - Teensy 4.1 Controller
  *
  * Reads four hardware quadrature encoder channels, reports raw counts and
- * calculated velocities to the laptop, and forwards player force commands to
- * two Hapkit motor boards.
+ * calculated velocities to the laptop, forwards player force commands to
+ * two Hapkit motor boards, and commands an ERM Hapkit board.
  *
  * Message Format:
- *   FROM LAPTOP: F,P1S,P1T,P2S,P2T[,LED_MASK]\n
+ *   FROM LAPTOP: F,P1S,P1T,P2S,P2T[,LED_MASK[,ERM_ENABLE[,P1_ERM_PWM[,P2_ERM_PWM]]]]\n
  *   TO LAPTOP:   P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US]\n
  *
  * Force values are integers (-1000 to 1000). Encoder positions are raw counts.
@@ -73,6 +73,9 @@ int p1SteeringForce = 0;
 int p1ThrottleForce = 0;
 int p2SteeringForce = 0;
 int p2ThrottleForce = 0;
+bool ermEnabled = true;
+byte p1ErmPwmCommand = 0;
+byte p2ErmPwmCommand = 0;
 
 enum Player1SwitchPosition {
   P1_SWITCH_CENTER = 0,
@@ -113,6 +116,9 @@ const int LED_MASK_P2_STAR = 1 << 4;
 const int LED_MASK_P2_DEAD = 1 << 5;
 
 void sendForcesToHapkit(Print& hapkitSerial, int steeringForce, int throttleForce);
+void sendErmCommandToHapkit(Print& hapkitSerial, byte pwmCommand1, byte pwmCommand2);
+byte effectiveP1ErmPwmCommand();
+byte effectiveP2ErmPwmCommand();
 byte forceToHapkitCommand(int force);
 void stopForcesIfLaptopTimedOut();
 void setupPlayerControls();
@@ -130,6 +136,7 @@ void setup() {
   LAPTOP_SERIAL.begin(LAPTOP_BAUD_RATE);
   HAPKIT_A_SERIAL.begin(HAPKIT_BAUD_RATE);
   HAPKIT_B_SERIAL.begin(HAPKIT_BAUD_RATE);
+  HAPKIT_ERM_SERIAL.begin(HAPKIT_BAUD_RATE);
 
   setupPlayerControls();
 
@@ -186,6 +193,11 @@ void updateControlLoop(unsigned long elapsedMicros) {
   // Logical game P2 is the optional 2-way-switch station on hardware channel A.
   sendForcesToHapkit(HAPKIT_A_SERIAL, p2SteeringForce, p2ThrottleForce);
   sendForcesToHapkit(HAPKIT_B_SERIAL, p1SteeringForce, p1ThrottleForce);
+  sendErmCommandToHapkit(
+    HAPKIT_ERM_SERIAL,
+    effectiveP1ErmPwmCommand(),
+    effectiveP2ErmPwmCommand()
+  );
 }
 
 void setupPlayerControls() {
@@ -260,8 +272,8 @@ void setPlayer1Leds(bool led1On, bool led2On) {
 }
 
 void setPlayer2Leds(bool led1On, bool led2On) {
-  digitalWrite(P2_LED_1_PIN, led2On ? P2_LED_1_ON_LEVEL : P2_LED_1_OFF_LEVEL);
-  digitalWrite(P2_LED_2_PIN, led1On ? LED_ON_LEVEL : LED_OFF_LEVEL);
+  digitalWrite(P2_LED_1_PIN, led1On ? P2_LED_1_ON_LEVEL : P2_LED_1_OFF_LEVEL);
+  digitalWrite(P2_LED_2_PIN, led2On ? LED_ON_LEVEL : LED_OFF_LEVEL);
 }
 
 void readEncoders() {
@@ -495,14 +507,25 @@ void readFromLaptop() {
 }
 
 void processLaptopMessage(char* message) {
-  // Expected format: F,P1S,P1T,P2S,P2T[,LED_MASK]
-  // Example: F,500,-200,0,0,11
+  // Expected format: F,P1S,P1T,P2S,P2T[,LED_MASK[,ERM_ENABLE[,P1_ERM_PWM[,P2_ERM_PWM]]]]
+  // Example: F,500,-200,0,0,11,1,30,0
   if (message[0] != 'F') {
     return;
   }
 
-  int p1s, p1t, p2s, p2t, ledMask;
-  int parsed = sscanf(message, "F,%d,%d,%d,%d,%d", &p1s, &p1t, &p2s, &p2t, &ledMask);
+  int p1s, p1t, p2s, p2t, ledMask, ermEnable, p1ErmPwm, p2ErmPwm;
+  int parsed = sscanf(
+    message,
+    "F,%d,%d,%d,%d,%d,%d,%d,%d",
+    &p1s,
+    &p1t,
+    &p2s,
+    &p2t,
+    &ledMask,
+    &ermEnable,
+    &p1ErmPwm,
+    &p2ErmPwm
+  );
 
   if (parsed >= 4) {
     p1SteeringForce = constrain(p1s, -1000, 1000);
@@ -511,6 +534,24 @@ void processLaptopMessage(char* message) {
     p2ThrottleForce = constrain(p2t, -1000, 1000);
     if (parsed >= 5) {
       applyLedStatusMask(ledMask);
+    }
+    if (parsed >= 6) {
+      ermEnabled = ermEnable != 0;
+      p1ErmPwmCommand = ermEnabled ? ERM_LAPTOP_ENABLE_PWM_COMMAND : 0;
+      p2ErmPwmCommand = p1ErmPwmCommand;
+    } else {
+      ermEnabled = false;
+      p1ErmPwmCommand = 0;
+      p2ErmPwmCommand = 0;
+    }
+    if (parsed >= 7) {
+      p1ErmPwmCommand = (byte)constrain(p1ErmPwm, 0, 255);
+      p2ErmPwmCommand = p1ErmPwmCommand;
+      ermEnabled = p1ErmPwmCommand > 0;
+    }
+    if (parsed >= 8) {
+      p2ErmPwmCommand = (byte)constrain(p2ErmPwm, 0, 255);
+      ermEnabled = p1ErmPwmCommand > 0 || p2ErmPwmCommand > 0;
     }
     lastForceCommandMillis = millis();
   }
@@ -566,6 +607,9 @@ void stopForcesIfLaptopTimedOut() {
   p1ThrottleForce = 0;
   p2SteeringForce = 0;
   p2ThrottleForce = 0;
+  ermEnabled = false;
+  p1ErmPwmCommand = 0;
+  p2ErmPwmCommand = 0;
 }
 
 void sendForcesToHapkit(Print& hapkitSerial, int steeringForce, int throttleForce) {
@@ -581,6 +625,29 @@ void sendForcesToHapkit(Print& hapkitSerial, int steeringForce, int throttleForc
   hapkitSerial.write(hapkitChannel1Command);
   hapkitSerial.write(hapkitChannel2Command);
   hapkitSerial.write(checksum);
+}
+
+void sendErmCommandToHapkit(Print& hapkitSerial, byte pwmCommand1, byte pwmCommand2) {
+  byte checksum = (byte)(ERM_DUAL_PACKET_HEADER + pwmCommand1 + pwmCommand2);
+
+  hapkitSerial.write((byte)ERM_DUAL_PACKET_HEADER);
+  hapkitSerial.write(pwmCommand1);
+  hapkitSerial.write(pwmCommand2);
+  hapkitSerial.write(checksum);
+}
+
+byte effectiveP1ErmPwmCommand() {
+  if (ERM_TEENSY_OVERRIDE_ENABLED) {
+    return ERM_TEENSY_ENABLED ? ERM_TEENSY_PWM_COMMAND : 0;
+  }
+  return ermEnabled ? p1ErmPwmCommand : 0;
+}
+
+byte effectiveP2ErmPwmCommand() {
+  if (ERM_TEENSY_OVERRIDE_ENABLED) {
+    return ERM_TEENSY_ENABLED ? ERM_TEENSY_PWM_COMMAND : 0;
+  }
+  return ermEnabled ? p2ErmPwmCommand : 0;
 }
 
 byte forceToHapkitCommand(int force) {

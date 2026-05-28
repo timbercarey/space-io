@@ -12,6 +12,7 @@
 // Serial2 = pins 7 (RX) and 8 (TX)
 // Serial3 = pins 15 (RX) and 14 (TX)
 // Serial4 = pins 16 (RX) and 17 (TX)
+// Serial5 = pins 21 (RX) and 20 (TX)
 // Serial7 = pins 28 (RX) and 29 (TX)
 // etc.
 
@@ -37,9 +38,21 @@
 // Only TX is needed for the motor command stream.
 #define HAPKIT_A_SERIAL Serial4  // TX pin 17
 #define HAPKIT_B_SERIAL Serial7  // TX pin 29
+#define HAPKIT_ERM_SERIAL Serial5  // TX pin 20
 #define HAPKIT_STOP_COMMAND 127
 #define HAPKIT_MAX_FORWARD_COMMAND 255
 #define HAPKIT_MAX_REVERSE_COMMAND 0
+#define ERM_PACKET_HEADER 0xE1
+#define ERM_DUAL_PACKET_HEADER 0xE2
+
+// ERM test override. When enabled, the Teensy ignores laptop ERM commands and
+// sends the configured PWM command to the ERM Hapkit continuously.
+const bool ERM_TEENSY_OVERRIDE_ENABLED = false;
+const bool ERM_TEENSY_ENABLED = true;
+const byte ERM_TEENSY_PWM_COMMAND = 30;
+
+// PWM used when the laptop sends only ERM_ENABLE and not an explicit ERM_PWM.
+const byte ERM_LAPTOP_ENABLE_PWM_COMMAND = 255;
 
 // Player switch and LED panel wiring. The 3-way switch drives the Teensy inputs
 // high when active. The 2-way switch uses the opposite state from the grounded
