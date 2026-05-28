@@ -8,12 +8,13 @@ from utils import Vector2
 from config import Config
 
 class Mine:
-    def __init__(self, position, velocity=None, rotation_speed=None):
+    def __init__(self, position, velocity=None, rotation_speed=None, size=None):
         """
         Args:
             position: Vector2
             velocity: Vector2 movement velocity in pixels per second
             rotation_speed: float visual spin in degrees per second
+            size: float asteroid radius in world pixels
         """
         self.position = position
         self.velocity = velocity or self._random_velocity()
@@ -24,7 +25,7 @@ class Mine:
             else self._random_rotation_speed()
         )
         self.active = True
-        self.size = Config.MINE_SIZE
+        self.size = size if size is not None else Config.MINE_SIZE
         self.color = Config.MINE_COLOR
         self.outline_color = Config.MINE_OUTLINE_COLOR
         self.crater_color = Config.MINE_CRATER_COLOR

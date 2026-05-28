@@ -48,7 +48,7 @@ class Config:
     SHIP_COLOR_P2 = (255, 100, 0)  # Orange
     SHIP_EXPLOSION_DURATION = 1.4  # seconds
     SHIP_EXPLOSION_PARTICLES = 18
-    GAME_OVER_RETURN_DELAY = 2.8  # seconds before returning to launch screen
+    SINGLE_PLAYER_RESTART_DELAY = 4.0  # seconds before auto-starting a new 1P game
     
     # === Trail Settings ===
     TRAIL_LENGTH = 75  # number of segments
@@ -62,6 +62,8 @@ class Config:
     NUM_MINES = 0
     STAR_SIZE = 10
     MINE_SIZE = 16
+    MINE_MIN_SIZE = MINE_SIZE
+    MINE_MAX_SIZE = MINE_MIN_SIZE * 2.8
     STAR_COLOR = (255, 255, 100)  # Yellow
     STAR_CORE_COLOR = (255, 255, 235)
     STAR_GLOW_COLOR = (255, 225, 90)
@@ -69,6 +71,22 @@ class Config:
     STAR_BREATHE_AMOUNT = 0.22  # fraction of base size
     STAR_FLICKER_SPEED = 6.5  # cycles per second
     STAR_FLICKER_AMOUNT = 0.18  # fraction of brightness
+    SUPER_STAR_SIZE = 13
+    SUPER_STAR_RESPAWN_MIN = 12.0  # seconds after collection/expiry
+    SUPER_STAR_RESPAWN_MAX = 18.0
+    SUPER_STAR_COLOR = (178, 80, 255)
+    SUPER_STAR_CORE_COLOR = (252, 235, 255)
+    SUPER_STAR_GLOW_COLOR = (175, 70, 255)
+    SUPER_BLADE_DURATION = 10.0
+    SUPER_BLADE_LENGTH = 210.0
+    SUPER_BLADE_WIDTH = 8.0
+    SUPER_BLADE_SPEED = 135.0
+    SUPER_BLADE_ROTATION_SPEED = 210.0  # degrees per second
+    SUPER_BLADE_PROXIMITY_DISTANCE = 95.0
+    SUPER_BLADE_PROXIMITY_STEERING_FREQ = 38.0
+    SUPER_BLADE_PROXIMITY_THROTTLE_FREQ = 43.0
+    SUPER_BLADE_PROXIMITY_STEERING_FORCE = 140.0
+    SUPER_BLADE_PROXIMITY_THROTTLE_FORCE = 65.0
     MINE_COLOR = (120, 116, 108)  # Gray-brown
     MINE_OUTLINE_COLOR = (195, 188, 174)
     MINE_CRATER_COLOR = (70, 67, 63)
@@ -119,6 +137,14 @@ class Config:
     # === Debug Settings ===
     SHOW_HITBOXES = False  # Show ship collision circles
 
+    # === Persistent Control Overlays ===
+    SHOW_THROTTLE_OVERLAY = True
+    THROTTLE_OVERLAY_WIDTH = 34
+    THROTTLE_OVERLAY_ALPHA = 72
+    THROTTLE_OVERLAY_MARGIN_Y = 78
+    THROTTLE_OVERLAY_CENTER_LINE_ALPHA = 92
+    THROTTLE_OVERLAY_WALL_ALPHA = 190
+
     # === Two-player Settings ===
     BEST_OF_ROUNDS = 7  # Best of 7 rounds
     RESPAWN_DELAY = 3.0  # Seconds before the next two-player round starts
@@ -131,6 +157,11 @@ class Config:
     BOOST_COOLDOWN = 1.0  # seconds after boost ends
     BOOST_THROTTLE_IMPULSE_FORCE = 220
     BOOST_THROTTLE_IMPULSE_DURATION = 0.14  # seconds
+    BOOST_ERM_MIN_PWM = 10
+    BOOST_ERM_MAX_PWM = 30
+    TRAIL_DEATH_ERM_MIN_PWM = 10
+    TRAIL_DEATH_ERM_MAX_PWM = 30
+    TRAIL_DEATH_ERM_DURATION = 0.5  # seconds
     
     # === Haptics Settings ===
     SERIAL_PORT = '/dev/cu.usbmodem199646501'  # Change to 'COM3' on Windows
@@ -217,14 +248,13 @@ class Config:
     THROTTLE_BOOST_PUSH_THROUGH_ENABLED = True
     THROTTLE_BOOST_PUSH_THROUGH_WIDTH_DEG = 12.0
     THROTTLE_BOOST_PUSH_THROUGH_STIFFNESS = 2200.0
-    THROTTLE_POSITION_PULSE_ENABLED = True
+    THROTTLE_POSITION_PULSE_ENABLED = False
     THROTTLE_POSITION_PULSE_BRAKE_WALL_BUFFER = 0.04
-    THROTTLE_POSITION_PULSE_MIN_FORCE = 80.0
-    THROTTLE_POSITION_PULSE_MAX_FORCE = 260.0
+    THROTTLE_POSITION_PULSE_FORCE = 600.0
     THROTTLE_POSITION_PULSE_BURST_FREQ = 180.0
-    THROTTLE_POSITION_PULSE_WIDTH_SEC = 0.040
-    THROTTLE_POSITION_PULSE_MIN_INTERVAL_SEC = 0.010
-    THROTTLE_POSITION_PULSE_MAX_INTERVAL_SEC = 0.070
+    THROTTLE_POSITION_PULSE_WIDTH_SEC = 0.005
+    THROTTLE_POSITION_PULSE_MIN_INTERVAL_SEC = 0.001
+    THROTTLE_POSITION_PULSE_MAX_INTERVAL_SEC = 0.01
 
     DAMPING_EFFECTS = [
         "Steering baseline damping: always-on viscous steering damping from normalized knob velocity.",
@@ -257,6 +287,8 @@ class Config:
     # Mine collision
     MINE_KICKBACK_FORCE = 800
     MINE_KICKBACK_DURATION = 0.2  # seconds
+    TRAIL_DEATH_THROTTLE_IMPULSE_FORCE = MINE_KICKBACK_FORCE * 0.5
+    TRAIL_DEATH_THROTTLE_IMPULSE_DURATION = MINE_KICKBACK_DURATION
     MINE_STEERING_VIBRATION_FREQ = 45  # Hz
     MINE_STEERING_VIBRATION_AMPLITUDE = 350
     ASTEROID_BOUNCE_SPEED = 360.0  # minimum pixels per second away from asteroid

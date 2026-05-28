@@ -61,10 +61,10 @@ class HapticController(Controller):
         with self._io_lock:
             return self.serial_comm.has_hardware_velocity_data()
 
-    def get_control_switch_snapshot(self):
+    def get_control_switch_snapshot(self, refresh=False):
         """Return hardware game-mode switch state."""
         with self._io_lock:
-            return self.serial_comm.get_control_switch_snapshot()
+            return self.serial_comm.get_control_switch_snapshot(refresh=refresh)
     
     def get_steering(self, player_id):
         """
@@ -96,7 +96,18 @@ class HapticController(Controller):
                 return 0.0
             return self.positions[player_id]['throttle']
     
-    def send_forces(self, p1_steer, p1_throttle, p2_steer=0, p2_throttle=0, led_mask=0):
+    def send_forces(
+        self,
+        p1_steer,
+        p1_throttle,
+        p2_steer=0,
+        p2_throttle=0,
+        led_mask=0,
+        erm_enable=0,
+        erm_pwm=0,
+        p1_erm_pwm=None,
+        p2_erm_pwm=None,
+    ):
         """
         Send force commands to hardware
         
@@ -106,6 +117,10 @@ class HapticController(Controller):
             p2_steer: Player 2 steering force (-1000 to 1000)
             p2_throttle: Player 2 throttle force (-1000 to 1000)
             led_mask: Player LED status bitmask
+            erm_enable: Non-zero to power the ERM Hapkit outputs
+            erm_pwm: Legacy ERM PWM command, 0 to 255, used for both players
+            p1_erm_pwm: Player 1 ERM PWM command, 0 to 255
+            p2_erm_pwm: Player 2 ERM PWM command, 0 to 255
         """
         with self._io_lock:
             self.serial_comm.send_forces(
@@ -113,7 +128,11 @@ class HapticController(Controller):
                 p1_throttle,
                 p2_steer,
                 p2_throttle,
-                led_mask
+                led_mask,
+                erm_enable,
+                erm_pwm,
+                p1_erm_pwm,
+                p2_erm_pwm
             )
 
     def stop_forces(self):

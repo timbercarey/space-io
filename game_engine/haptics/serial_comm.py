@@ -70,7 +70,18 @@ class SerialComm:
             self.simulation_mode = True
             self.connected = False
     
-    def send_forces(self, p1_steer, p1_throttle, p2_steer=0, p2_throttle=0, led_mask=0):
+    def send_forces(
+        self,
+        p1_steer,
+        p1_throttle,
+        p2_steer=0,
+        p2_throttle=0,
+        led_mask=0,
+        erm_enable=0,
+        erm_pwm=0,
+        p1_erm_pwm=None,
+        p2_erm_pwm=None,
+    ):
         """
         Send force commands to Teensy
         
@@ -80,6 +91,10 @@ class SerialComm:
             p2_steer: Player 2 steering force (-1000 to 1000)
             p2_throttle: Player 2 throttle force (-1000 to 1000)
             led_mask: Player LED status bitmask
+            erm_enable: Non-zero to power the ERM Hapkit outputs
+            erm_pwm: Legacy ERM PWM command, 0 to 255, used for both players
+            p1_erm_pwm: Player 1 ERM PWM command, 0 to 255
+            p2_erm_pwm: Player 2 ERM PWM command, 0 to 255
         """
         if self.simulation_mode or not self.connected:
             return
@@ -89,10 +104,23 @@ class SerialComm:
         p2_steer *= Config.STEERING_FORCE_DIRECTION
         p2_throttle *= Config.THROTTLE_FORCE_DIRECTION
 
-        # Format: F,P1S,P1T,P2S,P2T,LED_MASK\n
+        if p1_erm_pwm is None:
+            p1_erm_pwm = erm_pwm
+        if p2_erm_pwm is None:
+            p2_erm_pwm = erm_pwm
+
+        p1_erm_pwm = max(0, min(255, int(p1_erm_pwm)))
+        p2_erm_pwm = max(0, min(255, int(p2_erm_pwm)))
+        erm_enable = 1 if erm_enable or p1_erm_pwm > 0 or p2_erm_pwm > 0 else 0
+        if not erm_enable:
+            p1_erm_pwm = 0
+            p2_erm_pwm = 0
+
+        # Format: F,P1S,P1T,P2S,P2T,LED_MASK,ERM_ENABLE,P1_ERM_PWM,P2_ERM_PWM\n
         message = (
             f"F,{int(p1_steer)},{int(p1_throttle)},"
-            f"{int(p2_steer)},{int(p2_throttle)},{int(led_mask)}\n"
+            f"{int(p2_steer)},{int(p2_throttle)},"
+            f"{int(led_mask)},{erm_enable},{p1_erm_pwm},{p2_erm_pwm}\n"
         )
         
         try:
@@ -103,7 +131,7 @@ class SerialComm:
 
     def stop_forces(self):
         """Command all motors to stop."""
-        self.send_forces(0, 0, 0, 0)
+        self.send_forces(0, 0, 0, 0, erm_enable=0, erm_pwm=0)
     
     def read_positions(self):
         """

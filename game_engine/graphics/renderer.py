@@ -605,6 +605,69 @@ class Renderer:
         core_color = self._scale_color(star.core_color, brightness)
         pygame.draw.polygon(self.screen, star_color, points)
         pygame.draw.circle(self.screen, core_color, center, max(2, int(size * 0.45)))
+
+    def render_super_blade(self, blade):
+        """Render a temporary rotating blade made from ship-tail energy."""
+        if not blade.active:
+            return
+
+        blade_surface = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        life_fraction = max(0.0, min(1.0, blade.timer / Config.SUPER_BLADE_DURATION))
+        pulse = 0.75 + 0.25 * math.sin(time.perf_counter() * 18.0)
+        core_width = self._world_length_to_screen(Config.SUPER_BLADE_WIDTH, 2)
+        glow_width = max(core_width + 8, int(core_width * 5.8))
+        hot_width = max(1, int(core_width * 0.34))
+
+        edge_color = self._blend_color(blade.color, (80, 205, 255), 0.25)
+        core_color = self._blend_color(edge_color, (245, 252, 255), 0.72)
+        glow_alpha = int((20 + 18 * pulse) * life_fraction)
+        edge_alpha = int((68 + 28 * pulse) * life_fraction)
+        core_alpha = int((118 + 32 * pulse) * life_fraction)
+        center = self._world_to_screen(blade.position.to_tuple())
+        center_radius = self._world_length_to_screen(Config.SUPER_BLADE_WIDTH * 3.0, 3)
+        pygame.draw.circle(
+            blade_surface,
+            (*edge_color, int(54 * life_fraction)),
+            center,
+            center_radius
+        )
+        pygame.draw.circle(
+            blade_surface,
+            (*core_color, int(132 * life_fraction)),
+            center,
+            max(2, center_radius // 3)
+        )
+
+        for index, (start, end) in enumerate(blade.blade_segments()):
+            screen_start = self._world_to_screen(start.to_tuple())
+            screen_end = self._world_to_screen(end.to_tuple())
+            spoke_scale = 1.0 if index == 0 else 0.78 if index in (2, 4) else 0.58
+            self._draw_glowing_line(
+                blade_surface,
+                screen_start,
+                screen_end,
+                edge_color,
+                max(1, int(glow_width * spoke_scale)),
+                glow_alpha
+            )
+            self._draw_glowing_line(
+                blade_surface,
+                screen_start,
+                screen_end,
+                blade.color,
+                max(1, int(core_width * spoke_scale)),
+                edge_alpha
+            )
+            self._draw_glowing_line(
+                blade_surface,
+                screen_start,
+                screen_end,
+                core_color,
+                hot_width,
+                int(core_alpha * spoke_scale)
+            )
+
+        self.screen.blit(blade_surface, (0, 0))
     
     def render_mine(self, mine):
         """Render a mine"""
@@ -692,6 +755,172 @@ class Renderer:
             self.screen.blit(fps_surface, (Config.WINDOW_WIDTH - 100, 60))
 
         self._render_switch_debug(game_state)
+
+    def render_throttle_overlay(self, game_state, controller):
+        """Render persistent side throttle strips with virtual wall markers."""
+        if not Config.SHOW_THROTTLE_OVERLAY or controller is None:
+            return
+
+        active_players = [
+            player_id for player_id in (1, 2)
+            if player_id in game_state.ships
+        ]
+        for player_id in active_players:
+            throttle = controller.get_throttle(player_id)
+            self._render_player_throttle_strip(
+                player_id,
+                game_state.ships[player_id],
+                throttle
+            )
+
+    def _render_player_throttle_strip(self, player_id, ship, throttle):
+        """Render one player's translucent throttle strip on the matching screen edge."""
+        width = max(12, int(Config.THROTTLE_OVERLAY_WIDTH))
+        margin_y = max(16, int(Config.THROTTLE_OVERLAY_MARGIN_Y))
+        height = max(80, Config.WINDOW_HEIGHT - margin_y * 2)
+        x = 0 if player_id == 1 else Config.WINDOW_WIDTH - width
+        y = margin_y
+
+        player_color = Config.SHIP_COLOR_P1 if player_id == 1 else Config.SHIP_COLOR_P2
+        strip = pygame.Surface((width, height), pygame.SRCALPHA)
+        strip.fill((*player_color, Config.THROTTLE_OVERLAY_ALPHA))
+
+        rear_wall, normal_forward_wall = self._get_throttle_wall_markers()
+        forward_extension = (
+            Config.BOOST_THROTTLE_FORWARD_EXTENSION_DEG
+            if ship.boost_active
+            else 0.0
+        )
+        _boost_rear_wall, active_forward_wall = self._get_throttle_wall_markers(
+            forward_extension
+        )
+        _unused_rear_wall, max_forward_wall = self._get_throttle_wall_markers(
+            Config.BOOST_THROTTLE_FORWARD_EXTENSION_DEG
+        )
+
+        center_y = self._throttle_value_to_strip_y(
+            0.0,
+            height,
+            rear_wall,
+            max_forward_wall
+        )
+        pygame.draw.line(
+            strip,
+            (235, 245, 255, Config.THROTTLE_OVERLAY_CENTER_LINE_ALPHA),
+            (4, center_y),
+            (width - 4, center_y),
+            1
+        )
+
+        clamped_throttle = max(rear_wall, min(active_forward_wall, throttle))
+        throttle_y = self._throttle_value_to_strip_y(
+            clamped_throttle,
+            height,
+            rear_wall,
+            max_forward_wall
+        )
+        marker_radius = 5
+        forward_wall_y = self._throttle_value_to_strip_y(
+            active_forward_wall,
+            height,
+            rear_wall,
+            max_forward_wall
+        )
+        throttle_y = max(forward_wall_y + marker_radius + 1, throttle_y)
+        fill_top = min(center_y, throttle_y)
+        fill_height = max(3, abs(center_y - throttle_y))
+        fill_color = self._blend_color(player_color, (255, 255, 255), 0.24)
+        pygame.draw.rect(
+            strip,
+            (*fill_color, 150),
+            pygame.Rect(5, fill_top, width - 10, fill_height),
+            border_radius=3
+        )
+        pygame.draw.circle(
+            strip,
+            (245, 250, 255, 230),
+            (width // 2, throttle_y),
+            marker_radius
+        )
+
+        if ship.boost_active:
+            self._draw_open_throttle_wall(
+                strip,
+                normal_forward_wall,
+                ship.boost_timer,
+                rear_wall,
+                max_forward_wall
+            )
+            self._draw_throttle_wall(
+                strip,
+                active_forward_wall,
+                Config.STAR_COLOR,
+                rear_wall,
+                max_forward_wall
+            )
+        else:
+            self._draw_throttle_wall(
+                strip,
+                normal_forward_wall,
+                (245, 245, 245),
+                rear_wall,
+                max_forward_wall
+            )
+
+        self.screen.blit(strip, (x, y))
+
+    def _get_throttle_wall_markers(self, forward_extension_deg=0.0):
+        """Return normalized rear and forward throttle wall positions."""
+        scale = 360.0 * Config.THROTTLE_CONTROL_ROTATION_RANGE
+        if scale <= 0:
+            return (-1.0, 1.0)
+
+        rear_limit = (Config.THROTTLE_MOTION_RANGE_DEG / 2.0) / scale
+        forward_limit = (
+            (Config.THROTTLE_MOTION_RANGE_DEG / 2.0) + forward_extension_deg
+        ) / scale
+        return (-rear_limit, forward_limit)
+
+    def _throttle_value_to_strip_y(self, value, height, rear_limit, max_forward_limit):
+        """Map throttle to fixed reverse and forward display ranges."""
+        center_y = height // 2
+        if value <= 0.0:
+            reverse_span = max(0.001, abs(rear_limit))
+            clamped_value = max(rear_limit, min(0.0, value))
+            reverse_fraction = abs(clamped_value) / reverse_span
+            return int(center_y + reverse_fraction * ((height - 1) - center_y))
+
+        forward_span = max(0.001, max_forward_limit)
+        clamped_value = max(0.0, min(max_forward_limit, value))
+        forward_fraction = clamped_value / forward_span
+        return int(center_y - forward_fraction * center_y)
+
+    def _draw_throttle_wall(self, strip, value, color, rear_limit, forward_limit):
+        y = self._throttle_value_to_strip_y(
+            value,
+            strip.get_height(),
+            rear_limit,
+            forward_limit
+        )
+        alpha = Config.THROTTLE_OVERLAY_WALL_ALPHA
+        pygame.draw.line(strip, (*color, alpha), (2, y), (strip.get_width() - 3, y), 2)
+        point = [(strip.get_width() // 2, y - 5), (7, y), (strip.get_width() - 7, y)]
+        pygame.draw.polygon(strip, (*color, min(230, alpha + 35)), point)
+
+    def _draw_open_throttle_wall(self, strip, value, boost_timer, rear_limit, forward_limit):
+        y = self._throttle_value_to_strip_y(
+            value,
+            strip.get_height(),
+            rear_limit,
+            forward_limit
+        )
+        pulse = 0.55 + 0.45 * math.sin(max(0.0, boost_timer) * 16.0)
+        alpha = int(42 + 62 * pulse)
+        color = Config.STAR_COLOR
+        gap = max(5, strip.get_width() // 4)
+        mid = strip.get_width() // 2
+        pygame.draw.line(strip, (*color, alpha), (2, y), (mid - gap, y), 2)
+        pygame.draw.line(strip, (*color, alpha), (mid + gap, y), (strip.get_width() - 3, y), 2)
 
     def _render_switch_debug(self, game_state):
         """Render latest Teensy switch values for hardware verification."""

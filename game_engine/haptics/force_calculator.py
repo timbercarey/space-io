@@ -88,7 +88,10 @@ class ForceCalculator:
                 or self._is_between_rounds_waiting_for_restart(game_state)
             )
 
-            has_death_effect = manager.has_effect(HapticEffect.MINE_KICKBACK)
+            has_death_effect = (
+                manager.has_effect(HapticEffect.MINE_KICKBACK)
+                or manager.has_effect(HapticEffect.TRAIL_DEATH_IMPULSE)
+            )
             if not apply_baseline_forces and not has_death_effect:
                 return (0.0, 0.0)
 
@@ -136,6 +139,7 @@ class ForceCalculator:
                     throttle_position
                 )
                 throttle_force += self._calculate_throttle_position_pulse(
+                    ship,
                     player_id,
                     throttle_position
                 )
@@ -145,11 +149,20 @@ class ForceCalculator:
                 vibration = self._calculate_trail_vibration(player_id)
                 steering_force += vibration
 
+            # 2b. Light warning vibration near a super blade
+            if manager.has_effect(HapticEffect.SUPER_BLADE_PROXIMITY):
+                steering_force += self._calculate_super_blade_steering_vibration(player_id)
+                throttle_force += self._calculate_super_blade_throttle_vibration(player_id)
+
             # 3. Mine kickback
             if manager.has_effect(HapticEffect.MINE_KICKBACK):
                 kickback = self._calculate_mine_kickback()
                 steering_force += self._calculate_mine_hit_steering_vibration(player_id)
                 throttle_force += kickback
+
+            # 3b. Player-trail death throttle impulse
+            if manager.has_effect(HapticEffect.TRAIL_DEATH_IMPULSE):
+                throttle_force += self._calculate_trail_death_throttle_impulse()
 
             # 4. Asteroid bounce impulse while boosted
             if manager.has_effect(HapticEffect.ASTEROID_BOUNCE):
@@ -376,29 +389,30 @@ class ForceCalculator:
         gate_fade = 1.0 - (penetration / gate_width)
         return -penetration * Config.THROTTLE_BOOST_PUSH_THROUGH_STIFFNESS * gate_fade
 
-    def _calculate_throttle_position_pulse(self, player_id, throttle_position):
-        """Pulse throttle from the brake wall toward the boosted forward wall."""
-        if not Config.THROTTLE_POSITION_PULSE_ENABLED:
+    def _calculate_throttle_position_pulse(self, ship, player_id, throttle_position):
+        """Pulse throttle only after pushing past the normal forward wall while boosted."""
+        if not Config.THROTTLE_POSITION_PULSE_ENABLED or not ship.boost_active:
+            self.throttle_position_pulse_phase[player_id] = 0.0
             return 0.0
 
-        brake_wall_position, peak_throttle_position = self._get_virtual_wall_limits(
+        normal_forward_wall = self._get_virtual_wall_limits(
+            Config.THROTTLE_MOTION_RANGE_DEG,
+            Config.THROTTLE_CONTROL_ROTATION_RANGE
+        )[1]
+        _brake_wall_position, peak_throttle_position = self._get_virtual_wall_limits(
             Config.THROTTLE_MOTION_RANGE_DEG,
             Config.THROTTLE_CONTROL_ROTATION_RANGE,
             forward_extension_deg=Config.BOOST_THROTTLE_FORWARD_EXTENSION_DEG
         )
-        start_position = -brake_wall_position + max(
-            0.0,
-            Config.THROTTLE_POSITION_PULSE_BRAKE_WALL_BUFFER
-        )
 
-        if throttle_position <= start_position:
+        if throttle_position <= normal_forward_wall:
             self.throttle_position_pulse_phase[player_id] = 0.0
             return 0.0
 
-        usable_range = max(0.001, peak_throttle_position - start_position)
+        usable_range = max(0.001, peak_throttle_position - normal_forward_wall)
         pulse_scale = max(
             0.0,
-            min(1.0, (throttle_position - start_position) / usable_range)
+            min(1.0, (throttle_position - normal_forward_wall) / usable_range)
         )
         min_interval = max(0.001, Config.THROTTLE_POSITION_PULSE_MIN_INTERVAL_SEC)
         max_interval = max(min_interval, Config.THROTTLE_POSITION_PULSE_MAX_INTERVAL_SEC)
@@ -413,9 +427,7 @@ class ForceCalculator:
         pulse_envelope = math.sin(math.pi * pulse_progress)
         burst_frequency = max(1.0, Config.THROTTLE_POSITION_PULSE_BURST_FREQ)
         burst_vibration = math.sin(2 * math.pi * burst_frequency * phase)
-        min_force = max(0.0, Config.THROTTLE_POSITION_PULSE_MIN_FORCE)
-        max_force = max(min_force, Config.THROTTLE_POSITION_PULSE_MAX_FORCE)
-        amplitude = min_force + (max_force - min_force) * pulse_scale
+        amplitude = max(0.0, Config.THROTTLE_POSITION_PULSE_FORCE)
         return amplitude * pulse_envelope * burst_vibration
 
     def _calculate_centering_spring(self, position, stiffness):
@@ -777,6 +789,20 @@ class ForceCalculator:
         vibration = amplitude * math.sin(2 * math.pi * frequency * phase)
         
         return vibration
+
+    def _calculate_super_blade_steering_vibration(self, player_id):
+        """Calculate a light steering vibration near a super blade."""
+        phase = self.vibration_phase[player_id]
+        frequency = Config.SUPER_BLADE_PROXIMITY_STEERING_FREQ
+        amplitude = Config.SUPER_BLADE_PROXIMITY_STEERING_FORCE
+        return amplitude * math.sin(2 * math.pi * frequency * phase)
+
+    def _calculate_super_blade_throttle_vibration(self, player_id):
+        """Calculate a light throttle vibration near a super blade."""
+        phase = self.vibration_phase[player_id]
+        frequency = Config.SUPER_BLADE_PROXIMITY_THROTTLE_FREQ
+        amplitude = Config.SUPER_BLADE_PROXIMITY_THROTTLE_FORCE
+        return amplitude * math.sin(2 * math.pi * frequency * phase)
     
     def _calculate_mine_kickback(self):
         """
@@ -786,6 +812,10 @@ class ForceCalculator:
             float: Negative force (pushes back)
         """
         return -Config.MINE_KICKBACK_FORCE
+
+    def _calculate_trail_death_throttle_impulse(self):
+        """Calculate throttle-only kickback from dying on a player trail."""
+        return -Config.TRAIL_DEATH_THROTTLE_IMPULSE_FORCE
 
     def _calculate_mine_hit_steering_vibration(self, player_id):
         """Calculate short steering vibration from hitting an asteroid."""
@@ -825,6 +855,23 @@ class ForceCalculator:
         with self._lock:
             manager = self.effect_managers[player_id]
             manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+
+    def trigger_super_blade_proximity(self, player_id):
+        """Trigger continuous light vibration while near a super blade."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            if not manager.has_effect(HapticEffect.SUPER_BLADE_PROXIMITY):
+                manager.add_effect(
+                    HapticEffect.SUPER_BLADE_PROXIMITY,
+                    intensity=1.0,
+                    duration=0.0
+                )
+
+    def clear_super_blade_proximity(self, player_id):
+        """Stop super blade proximity vibration."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.SUPER_BLADE_PROXIMITY)
     
     def trigger_mine_hit(self, player_id):
         """Trigger mine kickback effect"""
@@ -834,6 +881,17 @@ class ForceCalculator:
             self.mine_hit_steering_vibration_phase[player_id] = 0.0
             manager.add_effect(HapticEffect.MINE_KICKBACK, intensity=1.0, 
                               duration=Config.MINE_KICKBACK_DURATION)
+
+    def trigger_trail_death(self, player_id):
+        """Trigger throttle-only kickback from dying on a player trail."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.TRAIL_DEATH_IMPULSE)
+            manager.add_effect(
+                HapticEffect.TRAIL_DEATH_IMPULSE,
+                intensity=1.0,
+                duration=Config.TRAIL_DEATH_THROTTLE_IMPULSE_DURATION
+            )
 
     def trigger_star_boost(self, player_id):
         """Trigger a short throttle impulse when collecting a boost star."""

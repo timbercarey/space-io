@@ -4,7 +4,7 @@ Central game state management
 import random
 from utils import Vector2
 from config import Config
-from entities import Spaceship, Star, Mine
+from entities import Spaceship, Star, SuperBlade, SuperStar, Mine
 
 class GameState:
     PLAYER_STARTS = Config.PLAYER_STARTS
@@ -42,6 +42,9 @@ class GameState:
         
         # Create stars and mines
         self.stars = self._spawn_stars()
+        self.super_star = self._spawn_super_star()
+        self.super_star_respawn_timer = None
+        self.super_blades = []
         self.mines = self._spawn_mines()
         
         # Game state
@@ -126,24 +129,32 @@ class GameState:
         if not Config.SPAWN_SAFE_ZONE_ENABLED:
             # Safe zone disabled, spawn anywhere
             for _ in range(Config.NUM_MINES):
-                mines.append(Mine(self._random_position(margin=100)))
+                mines.append(Mine(
+                    self._random_position(margin=100),
+                    size=self._random_mine_size()
+                ))
             return mines
         
         for _ in range(Config.NUM_MINES):
+            size = self._random_mine_size()
             # Keep trying until we get a position outside the safe zone
             max_attempts = 100
             for attempt in range(max_attempts):
                 pos = self._random_position(margin=100)
                 
-                if self._is_outside_spawn_safe_zones(pos, Config.MINE_SIZE):
-                    mines.append(Mine(pos))
+                if self._is_outside_spawn_safe_zones(pos, size):
+                    mines.append(Mine(pos, size=size))
                     break
             else:
                 # If we couldn't find a safe position after max attempts,
                 # just place it anywhere (shouldn't happen with reasonable settings)
-                mines.append(Mine(self._random_position(margin=100)))
+                mines.append(Mine(self._random_position(margin=100), size=size))
         
         return mines
+
+    def _random_mine_size(self):
+        """Choose an asteroid radius within the configured size range."""
+        return random.uniform(Config.MINE_MIN_SIZE, Config.MINE_MAX_SIZE)
 
     def _spawn_stars(self):
         """Spawn stars at random positions, avoiding spawn area"""
@@ -212,6 +223,60 @@ class GameState:
     def respawn_star(self, star_index):
         """Respawn a star at new random position"""
         self.stars[star_index] = Star(self._random_position(margin=100))
+
+    def _spawn_super_star(self):
+        """Spawn the rare super star away from active player starts."""
+        if not Config.SPAWN_SAFE_ZONE_ENABLED:
+            return SuperStar(self._random_position(margin=100))
+
+        max_attempts = 100
+        for _ in range(max_attempts):
+            pos = self._random_position(margin=100)
+            if self._is_outside_spawn_safe_zones(pos, Config.SUPER_STAR_SIZE):
+                return SuperStar(pos)
+
+        return SuperStar(self._random_position(margin=100))
+
+    def collect_super_star(self, player_id):
+        """Collect the rare star, spawn its blade, and start the respawn timer."""
+        if not self.super_star or not self.super_star.active:
+            return False
+
+        blade_position = Vector2(self.super_star.position.x, self.super_star.position.y)
+        self.super_star.collect()
+        self.super_star = None
+        self.super_star_respawn_timer = random.uniform(
+            Config.SUPER_STAR_RESPAWN_MIN,
+            Config.SUPER_STAR_RESPAWN_MAX
+        )
+        blade_color = (
+            self.ships[player_id].color
+            if player_id in self.ships
+            else Config.SHIP_COLOR_P1
+        )
+        self.super_blades.append(
+            SuperBlade(
+                blade_position,
+                blade_color,
+                owner_player_id=player_id
+            )
+        )
+        return True
+
+    def update_super_star_system(self, dt):
+        """Update rare star respawn timing and active super blades."""
+        if self.super_star:
+            self.super_star.update(dt)
+
+        if self.super_star is None and self.super_star_respawn_timer is not None:
+            self.super_star_respawn_timer -= dt
+            if self.super_star_respawn_timer <= 0.0:
+                self.super_star = self._spawn_super_star()
+                self.super_star_respawn_timer = None
+
+        for blade in self.super_blades:
+            blade.update(dt)
+        self.super_blades = [blade for blade in self.super_blades if blade.active]
     
     def declare_winner(self, player_id):
         """Declare a winner"""
@@ -261,6 +326,9 @@ class GameState:
         
         # Respawn stars and mines
         self.stars = self._spawn_stars()
+        self.super_star = self._spawn_super_star()
+        self.super_star_respawn_timer = None
+        self.super_blades = []
         self.mines = self._spawn_mines()
         
         return True

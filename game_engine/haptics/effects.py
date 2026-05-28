@@ -12,6 +12,8 @@ class HapticEffect(Enum):
     SPEED_DAMPING = 3
     ASTEROID_BOUNCE = 4
     STAR_BOOST = 5
+    SUPER_BLADE_PROXIMITY = 6
+    TRAIL_DEATH_IMPULSE = 7
 
 class EffectState:
     """State of a haptic effect"""

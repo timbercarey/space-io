@@ -29,7 +29,8 @@ def run_main_menu(
     screen,
     initial_ship_styles=None,
     initial_difficulty=None,
-    audio_manager=None
+    audio_manager=None,
+    controller=None
 ):
     """Run the pre-game menu and return selected settings, or None to quit."""
     clock = pygame.time.Clock()
@@ -82,6 +83,27 @@ def run_main_menu(
         )
         screen.blit(text_surface, text_pos)
 
+    def draw_centered_text(text, y, color=(180, 180, 180), use_font=None):
+        render_font = use_font or small_font
+        surface = render_font.render(text, True, color)
+        screen.blit(surface, ((Config.WINDOW_WIDTH - surface.get_width()) // 2, y))
+
+    def sync_difficulty_from_hardware():
+        if not controller or not hasattr(controller, 'get_control_switch_snapshot'):
+            return
+
+        try:
+            controls = controller.get_control_switch_snapshot(refresh=True)
+        except TypeError:
+            controls = controller.get_control_switch_snapshot()
+
+        if not controls.get('received', False):
+            return
+
+        difficulty = controls.get('difficulty')
+        if difficulty is not None:
+            set_difficulty(difficulty, play_sound=False)
+
     def style_label(style):
         for value, label in ship_style_options:
             if value == style:
@@ -96,10 +118,10 @@ def run_main_menu(
         if audio_manager:
             audio_manager.play("menu_select")
 
-    def set_difficulty(difficulty_level):
+    def set_difficulty(difficulty_level, play_sound=True):
         nonlocal selected_difficulty
         difficulty_level = max(1, min(3, int(difficulty_level)))
-        if selected_difficulty != difficulty_level and audio_manager:
+        if selected_difficulty != difficulty_level and play_sound and audio_manager:
             audio_manager.play("menu_select")
         selected_difficulty = difficulty_level
 
@@ -127,6 +149,8 @@ def run_main_menu(
         preview_renderer.render_spaceship(ship)
 
     while True:
+        sync_difficulty_from_hardware()
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return None
@@ -204,14 +228,13 @@ def run_main_menu(
         screen.blit(title, ((Config.WINDOW_WIDTH - title.get_width()) // 2, 110))
 
         if menu_screen == "main":
-            hardware_note = small_font.render(
-                "Player 2 is controlled by the hardware 2-way switch",
-                True,
-                (180, 180, 180)
+            draw_centered_text(
+                "Difficulty follows the 3-way switch live",
+                205
             )
-            screen.blit(
-                hardware_note,
-                ((Config.WINDOW_WIDTH - hardware_note.get_width()) // 2, 220)
+            draw_centered_text(
+                "Player 2 is controlled by the hardware 2-way switch",
+                226
             )
 
             difficulty_label = small_font.render("Difficulty", True, (180, 180, 180))
@@ -229,6 +252,23 @@ def run_main_menu(
 
             draw_button(rects["start"], "Start Game")
             draw_button(rects["options"], "Options")
+
+            how_to_y = 525
+            draw_centered_text("How to Play", how_to_y, (235, 245, 255), font)
+            if Config.SIMULATION_MODE:
+                control_lines = [
+                    "P1: W/S throttle, A/D steer",
+                    "P2: arrow keys when enabled",
+                    "Q/E or click to change difficulty, Enter to start",
+                ]
+            else:
+                control_lines = [
+                    "Steer wheel to turn; throttle forward to accelerate",
+                    "Pull throttle back to brake; collect stars for boost",
+                    "3-way switch selects difficulty, 2-way switch enables P2",
+                ]
+            for index, line in enumerate(control_lines):
+                draw_centered_text(line, how_to_y + 38 + index * 23)
         else:
             heading = font.render("Options", True, (235, 235, 235))
             screen.blit(heading, ((Config.WINDOW_WIDTH - heading.get_width()) // 2, 170))
@@ -265,13 +305,24 @@ def main():
     difficulty_level = Config.DEFAULT_DIFFICULTY
 
     while True:
+        # The menu reads hardware switches live, so the controller must exist
+        # before a game starts.
+        if Config.SIMULATION_MODE:
+            print("Running in SIMULATION MODE (keyboard input)")
+            controller = KeyboardController()
+        else:
+            print("Running in HARDWARE MODE (haptic input)")
+            controller = HapticController()
+
         selected_settings = run_main_menu(
             screen,
             ship_styles,
             difficulty_level,
-            audio_manager
+            audio_manager,
+            controller
         )
         if selected_settings is None:
+            controller.close()
             break
         screen = pygame.display.get_surface()
 
@@ -286,15 +337,7 @@ def main():
         )
         game_state.apply_difficulty(selected_difficulty)
         renderer = Renderer(screen)
-        
-        # Choose controller based on simulation mode
-        if Config.SIMULATION_MODE:
-            print("Running in SIMULATION MODE (keyboard input)")
-            controller = KeyboardController()
-        else:
-            print("Running in HARDWARE MODE (haptic input)")
-            controller = HapticController()
-        
+
         # Initialize haptics
         force_calculator = ForceCalculator()
         force_visualizer = ForceVisualizer(screen)
@@ -312,9 +355,11 @@ def main():
         else:
             print("Using haptic hardware for input")
         print("\nESC: Quit")
+        print("Backspace: Return to main menu")
         print("F: Toggle fullscreen")
         print("R: Restart")
-        print("H: Toggle haptic visualization")
+        print("H: Show keyboard shortcuts")
+        print("V: Toggle haptic visualization")
         print("B: Toggle hitbox display")
         print("Shift+S: Toggle audio mixer")
         print("M: Toggle music")
@@ -323,7 +368,8 @@ def main():
         if not Config.SIMULATION_MODE:
             print("Z: Zero throttle")
         print("\nRound over: next round starts automatically")
-        print("Game over: SPACEBAR to return to menu")
+        print("Single-player game over: new game starts after 4s, SPACEBAR returns to menu")
+        print("Two-player match over: SPACEBAR returns to menu")
         print("Haptic visualization: " + ("ON" if Config.SHOW_HAPTIC_PANEL else "OFF"))
         print("Hitbox display: " + ("ON" if Config.SHOW_HITBOXES else "OFF"))
         profile = Config.DIFFICULTY_PROFILES[selected_difficulty]
