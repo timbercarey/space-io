@@ -43,8 +43,10 @@ def run_main_menu(
     menu_screen = "main"
     ship_style_options = [
         ("x_wing", "X-wing"),
+        ("y_wing", "Y-wing"),
         ("tie_fighter", "TIE Fighter"),
         ("falcon", "Falcon"),
+        ("death_star", "Death Star"),
         ("classic", "Classic"),
     ]
 

@@ -35,10 +35,14 @@ class Renderer:
 
         if ship_style == "x_wing":
             self._render_x_wing_ship(ship)
+        elif ship_style == "y_wing":
+            self._render_y_wing_ship(ship)
         elif ship_style == "tie_fighter":
             self._render_tie_fighter_ship(ship)
         elif ship_style == "falcon":
             self._render_falcon_ship(ship)
+        elif ship_style == "death_star":
+            self._render_death_star_ship(ship)
         else:
             size = Config.SHIP_SIZE
             self._render_engine_plumes(ship, [(-0.72 * size, 0, 0.92, 0.18)])
@@ -290,6 +294,145 @@ class Renderer:
             2
         )
 
+    def _render_y_wing_ship(self, ship):
+        """Render a Y-wing-inspired bomber with yellow squadron markings."""
+        size = Config.SHIP_SIZE
+        hull_color = (202, 198, 176)
+        panel_color = (142, 144, 132)
+        shadow_color = (60, 64, 60)
+        dark_detail = (34, 38, 38)
+        canopy_color = (74, 112, 128)
+        canopy_glint = (178, 218, 226)
+        yellow_marking = (218, 164, 36)
+        yellow_shadow = (144, 102, 22)
+        engine_color = (156, 158, 146)
+        engine_dark = (36, 40, 42)
+        strut_color = (126, 128, 118)
+        ion_blue = (120, 212, 255)
+
+        self._render_engine_plumes(
+            ship,
+            [
+                (-1.72 * size, -0.70 * size, 0.86, 0.14),
+                (-1.72 * size, 0.70 * size, 0.86, 0.14),
+            ]
+        )
+
+        # Rear engine nacelles and exposed support struts.
+        for side in (-1, 1):
+            nacelle = [
+                (-0.34 * size, side * 0.50 * size),
+                (-1.72 * size, side * 0.50 * size),
+                (-1.96 * size, side * 0.62 * size),
+                (-1.96 * size, side * 0.88 * size),
+                (-1.72 * size, side * 1.00 * size),
+                (-0.34 * size, side * 1.00 * size),
+            ]
+            pygame.draw.polygon(self.screen, engine_color, self._ship_polygon(ship, nacelle))
+            pygame.draw.lines(self.screen, shadow_color, True, self._ship_polygon(ship, nacelle), 2)
+
+            stripe = [
+                (-0.58 * size, side * 0.55 * size),
+                (-1.52 * size, side * 0.55 * size),
+                (-1.52 * size, side * 0.68 * size),
+                (-0.58 * size, side * 0.68 * size),
+            ]
+            pygame.draw.polygon(self.screen, yellow_marking, self._ship_polygon(ship, stripe))
+            pygame.draw.lines(self.screen, yellow_shadow, True, self._ship_polygon(ship, stripe), 1)
+
+            pygame.draw.line(
+                self.screen,
+                strut_color,
+                self._ship_point(ship, -0.24 * size, side * 0.30 * size),
+                self._ship_point(ship, -1.86 * size, side * 0.54 * size),
+                2
+            )
+            pygame.draw.line(
+                self.screen,
+                strut_color,
+                self._ship_point(ship, -0.34 * size, side * 0.18 * size),
+                self._ship_point(ship, -1.86 * size, side * 0.94 * size),
+                1
+            )
+
+            intake = self._ship_point(ship, -0.30 * size, side * 0.75 * size)
+            exhaust = self._ship_point(ship, -1.96 * size, side * 0.75 * size)
+            pygame.draw.circle(self.screen, dark_detail, intake, self._world_length_to_screen(size * 0.18, 3))
+            pygame.draw.circle(self.screen, ion_blue, exhaust, self._world_length_to_screen(size * 0.16, 3))
+            pygame.draw.circle(self.screen, engine_dark, exhaust, self._world_length_to_screen(size * 0.16, 3), 1)
+
+        # Long central fuselage and forked nose.
+        rear_body = [
+            (-1.28 * size, 0.20 * size),
+            (-0.18 * size, 0.28 * size),
+            (0.34 * size, 0.20 * size),
+            (0.34 * size, -0.20 * size),
+            (-0.18 * size, -0.28 * size),
+            (-1.28 * size, -0.20 * size),
+        ]
+        nose = [
+            (1.92 * size, 0),
+            (1.18 * size, 0.24 * size),
+            (0.28 * size, 0.26 * size),
+            (-0.18 * size, 0.16 * size),
+            (-0.18 * size, -0.16 * size),
+            (0.28 * size, -0.26 * size),
+            (1.18 * size, -0.24 * size),
+        ]
+        pygame.draw.polygon(self.screen, panel_color, self._ship_polygon(ship, rear_body))
+        pygame.draw.lines(self.screen, shadow_color, True, self._ship_polygon(ship, rear_body), 1)
+        pygame.draw.polygon(self.screen, hull_color, self._ship_polygon(ship, nose))
+        pygame.draw.lines(self.screen, shadow_color, True, self._ship_polygon(ship, nose), 2)
+
+        center_stripe = [
+            (1.58 * size, 0.09 * size),
+            (0.42 * size, 0.11 * size),
+            (0.12 * size, 0.06 * size),
+            (0.12 * size, -0.06 * size),
+            (0.42 * size, -0.11 * size),
+            (1.58 * size, -0.09 * size),
+        ]
+        pygame.draw.polygon(self.screen, yellow_marking, self._ship_polygon(ship, center_stripe))
+
+        for side in (-1, 1):
+            mandible = [
+                (0.86 * size, side * 0.14 * size),
+                (1.72 * size, side * 0.26 * size),
+                (1.92 * size, side * 0.13 * size),
+                (1.02 * size, side * 0.04 * size),
+            ]
+            pygame.draw.polygon(self.screen, hull_color, self._ship_polygon(ship, mandible))
+            pygame.draw.lines(self.screen, shadow_color, False, self._ship_polygon(ship, mandible), 1)
+
+        canopy = [
+            (0.44 * size, 0),
+            (0.08 * size, 0.18 * size),
+            (-0.42 * size, 0.16 * size),
+            (-0.62 * size, 0),
+            (-0.42 * size, -0.16 * size),
+            (0.08 * size, -0.18 * size),
+        ]
+        pygame.draw.polygon(self.screen, canopy_color, self._ship_polygon(ship, canopy))
+        pygame.draw.lines(self.screen, dark_detail, True, self._ship_polygon(ship, canopy), 1)
+        pygame.draw.line(
+            self.screen,
+            canopy_glint,
+            self._ship_point(ship, 0.22 * size, 0.04 * size),
+            self._ship_point(ship, -0.36 * size, 0.06 * size),
+            1
+        )
+
+        # Astromech socket, turret bumps, and exposed rear greebles.
+        pygame.draw.circle(self.screen, dark_detail, self._ship_point(ship, -0.86 * size, 0), self._world_length_to_screen(size * 0.14, 2))
+        pygame.draw.circle(self.screen, hull_color, self._ship_point(ship, -0.86 * size, 0), self._world_length_to_screen(size * 0.10, 2))
+        for x, side in ((-0.66, -1), (-0.66, 1), (-1.08, -1), (-1.08, 1)):
+            pygame.draw.circle(
+                self.screen,
+                dark_detail,
+                self._ship_point(ship, x * size, side * 0.15 * size),
+                self._world_length_to_screen(size * 0.05, 1)
+            )
+
     def _render_tie_fighter_ship(self, ship):
         """Render player 2 as a TIE-fighter-inspired silhouette."""
         size = Config.SHIP_SIZE
@@ -447,6 +590,140 @@ class Renderer:
             engine_points.append(self._ship_point(ship, -1.26 * size, side * 0.76 * size))
         if len(engine_points) >= 2:
             pygame.draw.lines(self.screen, (116, 206, 255), False, engine_points, 2)
+
+    def _render_death_star_ship(self, ship):
+        """Render a Death-Star-inspired spherical battle station."""
+        size = Config.SHIP_SIZE
+        radius = self._world_length_to_screen(size * 1.36)
+        center = self._world_to_screen(ship.position.to_tuple())
+
+        hull_color = (166, 170, 166)
+        light_panel = (196, 199, 192)
+        mid_panel = (128, 134, 132)
+        dark_panel = (62, 66, 68)
+        trench_color = (38, 42, 44)
+        trench_highlight = (205, 210, 204)
+        dish_shadow = (44, 48, 50)
+        dish_mid = (108, 114, 116)
+        dish_light = (182, 188, 184)
+
+        body_surface = pygame.Surface((radius * 2 + 8, radius * 2 + 8), pygame.SRCALPHA)
+        local_center = (radius + 4, radius + 4)
+
+        pygame.draw.circle(body_surface, hull_color, local_center, radius)
+        pygame.draw.circle(
+            body_surface,
+            (224, 228, 220, 80),
+            (local_center[0] - radius // 4, local_center[1] - radius // 4),
+            max(1, int(radius * 0.66)),
+        )
+        pygame.draw.circle(body_surface, (28, 30, 32, 65), local_center, radius)
+        pygame.draw.circle(body_surface, (218, 222, 216, 170), local_center, radius, 1)
+
+        visual_angle = ship.angle - 90
+
+        def surface_point(forward_offset, side_offset):
+            forward = Vector2.from_angle(visual_angle)
+            left = Vector2.from_angle(visual_angle + 90)
+            world = ship.position + forward * forward_offset + left * side_offset
+            screen = self._world_to_screen(world.to_tuple())
+            return (screen[0] - center[0] + local_center[0], screen[1] - center[1] + local_center[1])
+
+        def clipped_line(local_a, local_b, color, width=1):
+            pygame.draw.line(body_surface, color, local_a, local_b, width)
+
+        # Latitudinal panel bands and the iconic equatorial trench.
+        for side_offset, color, width in (
+            (-0.78 * size, mid_panel, 1),
+            (-0.43 * size, light_panel, 1),
+            (0.00 * size, trench_color, 5),
+            (0.20 * size, dark_panel, 1),
+            (0.55 * size, mid_panel, 1),
+            (0.91 * size, light_panel, 1),
+        ):
+            span = math.sqrt(max(0.0, (size * 1.24) ** 2 - side_offset ** 2))
+            clipped_line(
+                surface_point(-span, side_offset),
+                surface_point(span, side_offset),
+                color,
+                width
+            )
+        clipped_line(
+            surface_point(-1.12 * size, 0.06 * size),
+            surface_point(1.12 * size, 0.06 * size),
+            trench_highlight,
+            1
+        )
+
+        # Vertical seams and broken armor-panel strokes keep the sphere readable.
+        for forward_offset in (-0.76, -0.38, 0.02, 0.44, 0.82):
+            x = forward_offset * size
+            span = math.sqrt(max(0.0, (size * 1.16) ** 2 - x ** 2))
+            clipped_line(
+                surface_point(x, -span),
+                surface_point(x, span),
+                mid_panel if forward_offset < 0.5 else dark_panel,
+                1
+            )
+
+        panel_strokes = (
+            (-0.95, -0.62, -0.52, -0.62),
+            (-0.76, 0.72, -0.32, 0.72),
+            (-0.44, -0.28, -0.08, -0.28),
+            (-0.22, 1.02, 0.20, 1.02),
+            (0.16, -0.84, 0.66, -0.84),
+            (0.30, 0.38, 0.82, 0.38),
+            (0.62, -0.18, 1.02, -0.18),
+            (0.72, 0.74, 1.06, 0.74),
+        )
+        for x1, y1, x2, y2 in panel_strokes:
+            clipped_line(
+                surface_point(x1 * size, y1 * size),
+                surface_point(x2 * size, y2 * size),
+                dark_panel,
+                1
+            )
+
+        # Concave superlaser dish, placed off-center in the upper hemisphere.
+        dish_center = surface_point(-0.36 * size, 0.48 * size)
+        dish_radius = self._world_length_to_screen(size * 0.43, 5)
+        pygame.draw.circle(body_surface, dish_shadow, dish_center, dish_radius)
+        pygame.draw.circle(body_surface, dish_mid, dish_center, int(dish_radius * 0.78))
+        pygame.draw.circle(body_surface, dish_light, dish_center, int(dish_radius * 0.43))
+        pygame.draw.circle(body_surface, (18, 22, 24), dish_center, max(2, int(dish_radius * 0.16)))
+        for angle_offset in range(0, 360, 45):
+            angle = math.radians(visual_angle + angle_offset)
+            inner = int(dish_radius * 0.20)
+            outer = int(dish_radius * 0.78)
+            start = (
+                int(dish_center[0] + math.cos(angle) * inner),
+                int(dish_center[1] - math.sin(angle) * inner),
+            )
+            end = (
+                int(dish_center[0] + math.cos(angle) * outer),
+                int(dish_center[1] - math.sin(angle) * outer),
+            )
+            pygame.draw.line(body_surface, dish_shadow, start, end, 1)
+        pygame.draw.circle(body_surface, trench_highlight, dish_center, dish_radius, 1)
+
+        # Small surface craters and reactor-panel blocks.
+        for x, y, crater_scale in (
+            (-0.82, 0.08, 0.10),
+            (-0.58, -0.82, 0.08),
+            (0.03, -0.58, 0.07),
+            (0.48, 0.86, 0.06),
+            (0.74, -0.48, 0.09),
+            (0.94, 0.14, 0.07),
+        ):
+            crater_center = surface_point(x * size, y * size)
+            crater_radius = self._world_length_to_screen(size * crater_scale, 2)
+            pygame.draw.circle(body_surface, dark_panel, crater_center, crater_radius)
+            pygame.draw.circle(body_surface, light_panel, crater_center, crater_radius, 1)
+
+        self.screen.blit(
+            body_surface,
+            (center[0] - local_center[0], center[1] - local_center[1])
+        )
 
     def render_ship_explosion(self, ship):
         """Render ship explosion particles."""
@@ -713,12 +990,11 @@ class Renderer:
         """Render heads-up display (score, status, etc.)"""
         y_offset = 10
         
-        # Player 1 status (top-left)
-        p1_text = f"P1 Score: {game_state.scores[1]}"
+        # Player 1 wins (top-left) - for two-player
         if game_state.num_players == 2:
-            p1_text += f" | Wins: {game_state.kills[1]}"
-        self.render_text(p1_text, (10, y_offset), 
-                        Config.SHIP_COLOR_P1, small=True)
+            p1_text = f"P1 Wins: {game_state.kills[1]}"
+            self.render_text(p1_text, (10, y_offset),
+                            Config.SHIP_COLOR_P1, small=True)
         
         if 1 in game_state.ships and game_state.ships[1].boost_active:
             boost_text = self._format_boost_timer(game_state.ships[1])
@@ -727,8 +1003,7 @@ class Renderer:
         
         # Player 2 status (top-right) - for two-player
         if game_state.num_players == 2:
-            p2_text = f"P2 Score: {game_state.scores[2]}"
-            p2_text += f" | Wins: {game_state.kills[2]}"
+            p2_text = f"P2 Wins: {game_state.kills[2]}"
             text_surface = self.small_font.render(p2_text, True, Config.SHIP_COLOR_P2)
             self.screen.blit(text_surface, 
                             (Config.WINDOW_WIDTH - text_surface.get_width() - 10, y_offset))
