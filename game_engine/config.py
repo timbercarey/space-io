@@ -51,7 +51,7 @@ class Config:
     SINGLE_PLAYER_RESTART_DELAY = 4.0  # seconds before auto-starting a new 1P game
     
     # === Trail Settings ===
-    TRAIL_LENGTH = 75  # number of segments
+    TRAIL_LENGTH = 90  # number of segments
     TRAIL_WIDTH = 2  # pixels
     TRAIL_SEGMENT_SPACING = 5  # pixels between trail points
     TRAIL_COLOR_P1 = (0, 150, 200)  # Darker cyan

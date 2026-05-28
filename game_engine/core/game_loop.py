@@ -37,7 +37,6 @@ class GameLoop:
         self.clock = pygame.time.Clock()
         self.return_to_menu = False
         self.audio_events = []
-        self.help_panel_visible = False
         self.volume_panel_visible = False
         self.dragging_volume_slider = None
         self.state_lock = threading.RLock()
@@ -161,9 +160,7 @@ class GameLoop:
                     with self.state_lock:
                         self._restart_game()
                 elif event.key == pygame.K_h:
-                    self.help_panel_visible = not self.help_panel_visible
-                elif event.key == pygame.K_v:
-                    # Toggle haptic visualization
+                    # Toggle debug overlay
                     Config.SHOW_HAPTIC_PANEL = not Config.SHOW_HAPTIC_PANEL
                 elif event.key == pygame.K_b:
                     # Toggle hitbox display
@@ -602,12 +599,10 @@ class GameLoop:
         # Render haptic visualization
         if self.force_visualizer and Config.SHOW_HAPTIC_PANEL:
             self.force_visualizer.render(self.force_calculator, self.controller, render_state)
+            self._render_shortcuts_panel()
 
         if self.volume_panel_visible:
             self._render_volume_panel()
-
-        if self.help_panel_visible:
-            self._render_shortcuts_panel()
         
         # Show game over message
         if render_state.game_over:
@@ -681,12 +676,11 @@ class GameLoop:
         self.renderer.screen.blit(title, (panel.x + 22, panel.y + 18))
 
         shortcuts = [
-            ("H", "Show or hide this panel"),
+            ("H", "Toggle debug overlay"),
             ("Backspace", "Return to main menu"),
             ("ESC", "Quit game"),
             ("R", "Restart current game"),
             ("F", "Toggle fullscreen"),
-            ("V", "Toggle haptic visualization"),
             ("B", "Toggle hitboxes"),
             ("Shift+S", "Toggle audio mixer"),
             ("M", "Toggle music"),
