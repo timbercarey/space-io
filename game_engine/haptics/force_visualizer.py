@@ -1,6 +1,8 @@
 """
 Visualize haptic forces on screen for debugging/simulation
 """
+import time
+
 import pygame
 from config import Config
 from .effects import HapticEffect
@@ -25,6 +27,8 @@ class ForceVisualizer:
             controller: Controller instance
             game_state: GameState instance
         """
+        self._render_switch_debug(game_state)
+
         # Player 1 on left side
         if 1 in game_state.ships:
             if Config.SHOW_KNOB_VELOCITY_PLOT:
@@ -76,6 +80,77 @@ class ForceVisualizer:
                 controller=controller,
                 game_state=game_state
             )
+
+    def _render_switch_debug(self, game_state):
+        """Render raw hardware switch state in the haptic/debug overlay."""
+        panel_width = 390
+        panel_height = 146
+        x = (Config.WINDOW_WIDTH - panel_width) // 2
+        y = 58
+        panel_rect = pygame.Rect(x, y, panel_width, panel_height)
+        pygame.draw.rect(self.screen, (24, 28, 32), panel_rect)
+        pygame.draw.rect(self.screen, (90, 150, 170), panel_rect, 2)
+
+        packet_received = getattr(game_state, 'hardware_switch_packet_received', False)
+        difficulty = getattr(game_state, 'hardware_difficulty_switch', None)
+        p2_enabled = getattr(game_state, 'hardware_player2_enabled', None)
+        pin25_active = getattr(game_state, 'hardware_pin25_active', None)
+        pin26_active = getattr(game_state, 'hardware_pin26_active', None)
+        pin9_active = getattr(game_state, 'hardware_pin9_active', None)
+        profile = Config.DIFFICULTY_PROFILES.get(difficulty, {})
+        difficulty_name = profile.get("name", "unknown")
+
+        change_time = getattr(game_state, 'hardware_switch_change_time', None)
+        change_message = getattr(game_state, 'hardware_switch_change_message', "")
+        change_age = (
+            time.perf_counter() - change_time
+            if change_time is not None
+            else None
+        )
+        recent_change = change_age is not None and change_age <= 2.0
+
+        lines = [
+            "Hardware Switches",
+            f"Switch packet: {'received' if packet_received else 'not received'}",
+            (
+                f"SWITCH CHANGE DETECTED: {change_message}"
+                if recent_change
+                else "Switch change: waiting"
+            ),
+            (
+                f"Active pins: 25={1 if pin25_active else 0}  "
+                f"26={1 if pin26_active else 0}  "
+                f"9={1 if pin9_active else 0}"
+                if pin25_active is not None
+                else "Raw pins: --"
+            ),
+            (
+                f"3-way primary: {difficulty} ({difficulty_name})"
+                if difficulty is not None
+                else "3-way primary: --"
+            ),
+            (
+                f"2-way optional: {'P2 enabled' if p2_enabled else 'P2 disabled'}"
+                if p2_enabled is not None
+                else "2-way optional: --"
+            ),
+            f"Game: {game_state.num_players} player(s), {len(game_state.mines)} asteroid(s)",
+        ]
+
+        colors = [
+            (235, 245, 255),
+            (130, 230, 150) if packet_received else (255, 165, 100),
+            (120, 255, 170) if recent_change else (145, 145, 145),
+            (220, 220, 120),
+            (210, 225, 235),
+            (210, 225, 235),
+            (180, 220, 230),
+        ]
+
+        for index, line in enumerate(lines):
+            font = self.font if index == 0 else self.small_font
+            surface = font.render(line, True, colors[index])
+            self.screen.blit(surface, (x + 12, y + 8 + index * 18))
     
     def _render_player_forces(self, player_id, x, y, force_calculator, controller, game_state):
         """Render force display for one player"""
@@ -589,6 +664,8 @@ class ForceVisualizer:
             HapticEffect.NONE: "None",
             HapticEffect.TRAIL_VIBRATION: "Trail Vibration",
             HapticEffect.MINE_KICKBACK: "Mine Kickback",
-            HapticEffect.SPEED_DAMPING: "Speed Damping"
+            HapticEffect.SPEED_DAMPING: "Speed Damping",
+            HapticEffect.ASTEROID_BOUNCE: "Asteroid Bounce",
+            HapticEffect.STAR_BOOST: "Star Boost"
         }
         return names.get(effect, "Unknown")

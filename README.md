@@ -79,13 +79,17 @@ mapping before increasing force gains.
 
 ## Hardware Startup
 
+Only one USB cable is needed between the laptop and Teensy. The Teensy reads
+both players' encoders and forwards motor packets to both Hapkit modules.
+
 1. Upload current firmware to the Teensy and Hapkit board if needed.
 2. Plug in power to the Hapkit board or boards.
-3. Connect Teensy GND to Hapkit GND.
-4. Connect Teensy `Serial4` TX, pin 17, to the Hapkit serial RX.
-5. Plug the Teensy into the computer over USB.
-6. Confirm `game_engine/config.py` points at the Teensy serial port.
-7. Close Arduino Serial Monitor or any other program using the Teensy serial
+3. Connect Teensy GND to both Hapkit GND pins.
+4. Connect Teensy `Serial4` TX, pin 17, to module A Hapkit serial RX.
+5. Connect Teensy `Serial7` TX, pin 29, to module B Hapkit serial RX.
+6. Plug the Teensy into the computer over USB.
+7. Confirm `game_engine/config.py` points at the Teensy serial port.
+8. Close Arduino Serial Monitor or any other program using the Teensy serial
    port before starting the game.
 
 ## Run The Game
@@ -122,9 +126,19 @@ General controls:
 - `R`: restart the current game without returning to the menu.
 - `H`: toggle haptic visualization.
 - `B`: toggle hitbox display.
-- `Z`: zero throttle, hardware mode only.
+- `Shift+S`: toggle the live audio mixer.
+- `M`: toggle music.
+- `N`: toggle sound effects.
+- `T`: switch background music track.
+- `Z`: zero steering and throttle, hardware mode only.
 - Round over: `SPACEBAR` starts the next round.
 - Game over: `SPACEBAR` returns to the menu.
+
+## Audio
+
+Background music and generated sound effects live under
+`game_engine/assets/audio/`. Music and asset licensing notes are tracked in
+`game_engine/assets/audio/CREDITS.md`.
 
 ## Teensy Serial Testing
 
@@ -155,7 +169,7 @@ send force commands.
    Example:
 
    ```text
-   F,100,-100,0,0
+   F,100,-100,50,-50
    ```
 
    Start with small values and verify motor direction before increasing force.

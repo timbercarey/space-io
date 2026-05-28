@@ -60,6 +60,11 @@ class HapticController(Controller):
         """Return True once the serial stream has included Teensy velocity data."""
         with self._io_lock:
             return self.serial_comm.has_hardware_velocity_data()
+
+    def get_control_switch_snapshot(self):
+        """Return hardware game-mode switch state."""
+        with self._io_lock:
+            return self.serial_comm.get_control_switch_snapshot()
     
     def get_steering(self, player_id):
         """
@@ -91,7 +96,7 @@ class HapticController(Controller):
                 return 0.0
             return self.positions[player_id]['throttle']
     
-    def send_forces(self, p1_steer, p1_throttle, p2_steer=0, p2_throttle=0):
+    def send_forces(self, p1_steer, p1_throttle, p2_steer=0, p2_throttle=0, led_mask=0):
         """
         Send force commands to hardware
         
@@ -100,14 +105,34 @@ class HapticController(Controller):
             p1_throttle: Player 1 throttle force (-1000 to 1000)
             p2_steer: Player 2 steering force (-1000 to 1000)
             p2_throttle: Player 2 throttle force (-1000 to 1000)
+            led_mask: Player LED status bitmask
         """
         with self._io_lock:
-            self.serial_comm.send_forces(p1_steer, p1_throttle, p2_steer, p2_throttle)
+            self.serial_comm.send_forces(
+                p1_steer,
+                p1_throttle,
+                p2_steer,
+                p2_throttle,
+                led_mask
+            )
+
+    def stop_forces(self):
+        """Command all hardware motors to stop."""
+        with self._io_lock:
+            self.serial_comm.stop_forces()
 
     def zero_throttle(self, player_ids=None):
         """Use current hardware throttle count as the zero position."""
         with self._io_lock:
             return self.serial_comm.zero_throttle(player_ids)
+
+    def zero_inputs(self, player_ids=None):
+        """Use current hardware steering/throttle counts as zero positions."""
+        with self._io_lock:
+            offsets = self.serial_comm.zero_inputs(player_ids)
+            self.positions = self.serial_comm.latest_positions
+            self.velocities = self.serial_comm.latest_velocities
+            return offsets
     
     def close(self):
         """Cleanup resources"""

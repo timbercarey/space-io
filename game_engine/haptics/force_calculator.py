@@ -20,11 +20,15 @@ class ForceCalculator:
         
         # Timers for time-based effects
         self.vibration_phase = {1: 0.0, 2: 0.0}
+        self.throttle_position_pulse_phase = {1: 0.0, 2: 0.0}
+        self.mine_hit_steering_vibration_phase = {1: 0.0, 2: 0.0}
+        self.asteroid_bounce_steering_vibration_phase = {1: 0.0, 2: 0.0}
         self.axis_velocities = {
             1: {'steering': 0.0, 'throttle': 0.0},
             2: {'steering': 0.0, 'throttle': 0.0}
         }
         self.steering_wall_damping_latched = {1: False, 2: False}
+        self.asteroid_bounce_steering_direction = {1: 1.0, 2: 1.0}
         self.velocity_estimator = AxisVelocityEstimator()
         self.using_hardware_velocity = False
         self._latest_position_velocity_snapshot = (
@@ -49,6 +53,9 @@ class ForceCalculator:
             # Update vibration phase for oscillation
             for player_id in self.vibration_phase:
                 self.vibration_phase[player_id] += dt
+                self.throttle_position_pulse_phase[player_id] += dt
+                self.mine_hit_steering_vibration_phase[player_id] += dt
+                self.asteroid_bounce_steering_vibration_phase[player_id] += dt
 
             if controller:
                 self._start_velocity_source(controller)
@@ -75,18 +82,22 @@ class ForceCalculator:
                 return (0.0, 0.0)
 
             ship = game_state.ships[player_id]
-
-            if not ship.alive:
-                return (0.0, 0.0)
-
             manager = self.effect_managers[player_id]
+            apply_baseline_forces = (
+                ship.alive
+                or self._is_between_rounds_waiting_for_restart(game_state)
+            )
+
+            has_death_effect = manager.has_effect(HapticEffect.MINE_KICKBACK)
+            if not apply_baseline_forces and not has_death_effect:
+                return (0.0, 0.0)
 
             # Start with base forces
             steering_force = 0.0
             throttle_force = 0.0
 
             # 1. Baseline axis forces.
-            if controller:
+            if controller and apply_baseline_forces:
                 has_velocity_snapshot, positions, velocities = (
                     self._get_position_velocity_snapshot(controller)
                 )
@@ -124,6 +135,10 @@ class ForceCalculator:
                     player_id,
                     throttle_position
                 )
+                throttle_force += self._calculate_throttle_position_pulse(
+                    player_id,
+                    throttle_position
+                )
 
             # 2. Trail vibration
             if manager.has_effect(HapticEffect.TRAIL_VIBRATION):
@@ -133,13 +148,31 @@ class ForceCalculator:
             # 3. Mine kickback
             if manager.has_effect(HapticEffect.MINE_KICKBACK):
                 kickback = self._calculate_mine_kickback()
+                steering_force += self._calculate_mine_hit_steering_vibration(player_id)
                 throttle_force += kickback
+
+            # 4. Asteroid bounce impulse while boosted
+            if manager.has_effect(HapticEffect.ASTEROID_BOUNCE):
+                steering_force += self._calculate_asteroid_bounce_steering_vibration(player_id)
+                throttle_force += Config.ASTEROID_BOUNCE_THROTTLE_FORCE
+
+            # 5. Faint forward throttle impulse when a star boost starts
+            if manager.has_effect(HapticEffect.STAR_BOOST):
+                throttle_force += Config.BOOST_THROTTLE_IMPULSE_FORCE
 
             # Clamp forces to valid range
             steering_force = max(-1000, min(1000, steering_force))
             throttle_force = max(-1000, min(1000, throttle_force))
 
             return (steering_force, throttle_force)
+
+    def _is_between_rounds_waiting_for_restart(self, game_state):
+        """Return True while a non-final two-player round is resetting."""
+        return (
+            game_state.num_players == 2
+            and game_state.game_over
+            and game_state.get_match_winner() is None
+        )
 
     def _calculate_steering_baseline_force(self, ship, player_id, steering_position):
         """Calculate the selected steering force model before event effects."""
@@ -342,6 +375,48 @@ class ForceCalculator:
 
         gate_fade = 1.0 - (penetration / gate_width)
         return -penetration * Config.THROTTLE_BOOST_PUSH_THROUGH_STIFFNESS * gate_fade
+
+    def _calculate_throttle_position_pulse(self, player_id, throttle_position):
+        """Pulse throttle from the brake wall toward the boosted forward wall."""
+        if not Config.THROTTLE_POSITION_PULSE_ENABLED:
+            return 0.0
+
+        brake_wall_position, peak_throttle_position = self._get_virtual_wall_limits(
+            Config.THROTTLE_MOTION_RANGE_DEG,
+            Config.THROTTLE_CONTROL_ROTATION_RANGE,
+            forward_extension_deg=Config.BOOST_THROTTLE_FORWARD_EXTENSION_DEG
+        )
+        start_position = -brake_wall_position + max(
+            0.0,
+            Config.THROTTLE_POSITION_PULSE_BRAKE_WALL_BUFFER
+        )
+
+        if throttle_position <= start_position:
+            self.throttle_position_pulse_phase[player_id] = 0.0
+            return 0.0
+
+        usable_range = max(0.001, peak_throttle_position - start_position)
+        pulse_scale = max(
+            0.0,
+            min(1.0, (throttle_position - start_position) / usable_range)
+        )
+        min_interval = max(0.001, Config.THROTTLE_POSITION_PULSE_MIN_INTERVAL_SEC)
+        max_interval = max(min_interval, Config.THROTTLE_POSITION_PULSE_MAX_INTERVAL_SEC)
+        interval = max_interval - (max_interval - min_interval) * pulse_scale
+        width = max(0.001, min(Config.THROTTLE_POSITION_PULSE_WIDTH_SEC, interval))
+
+        phase = self.throttle_position_pulse_phase[player_id] % interval
+        if phase >= width:
+            return 0.0
+
+        pulse_progress = phase / width
+        pulse_envelope = math.sin(math.pi * pulse_progress)
+        burst_frequency = max(1.0, Config.THROTTLE_POSITION_PULSE_BURST_FREQ)
+        burst_vibration = math.sin(2 * math.pi * burst_frequency * phase)
+        min_force = max(0.0, Config.THROTTLE_POSITION_PULSE_MIN_FORCE)
+        max_force = max(min_force, Config.THROTTLE_POSITION_PULSE_MAX_FORCE)
+        amplitude = min_force + (max_force - min_force) * pulse_scale
+        return amplitude * pulse_envelope * burst_vibration
 
     def _calculate_centering_spring(self, position, stiffness):
         """Calculate a simple spring force toward normalized zero."""
@@ -711,11 +786,30 @@ class ForceCalculator:
             float: Negative force (pushes back)
         """
         return -Config.MINE_KICKBACK_FORCE
+
+    def _calculate_mine_hit_steering_vibration(self, player_id):
+        """Calculate short steering vibration from hitting an asteroid."""
+        phase = self.mine_hit_steering_vibration_phase[player_id]
+        frequency = Config.MINE_STEERING_VIBRATION_FREQ
+        amplitude = Config.MINE_STEERING_VIBRATION_AMPLITUDE
+        return amplitude * math.sin(2 * math.pi * frequency * phase)
+
+    def _calculate_asteroid_bounce_steering_vibration(self, player_id):
+        """Calculate short steering vibration from bouncing off an asteroid."""
+        phase = self.asteroid_bounce_steering_vibration_phase[player_id]
+        frequency = Config.ASTEROID_BOUNCE_STEERING_VIBRATION_FREQ
+        amplitude = Config.ASTEROID_BOUNCE_STEERING_FORCE
+        direction = self.asteroid_bounce_steering_direction.get(player_id, 1.0)
+        return direction * amplitude * math.sin(2 * math.pi * frequency * phase)
     
     def trigger_trail_collision(self, player_id):
         """Trigger trail collision vibration"""
         with self._lock:
             manager = self.effect_managers[player_id]
+
+            if not Config.TRAIL_VIBRATION_ENABLED:
+                manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+                return
 
             # Clear any existing trail vibration
             manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
@@ -736,8 +830,34 @@ class ForceCalculator:
         """Trigger mine kickback effect"""
         with self._lock:
             manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.MINE_KICKBACK)
+            self.mine_hit_steering_vibration_phase[player_id] = 0.0
             manager.add_effect(HapticEffect.MINE_KICKBACK, intensity=1.0, 
                               duration=Config.MINE_KICKBACK_DURATION)
+
+    def trigger_star_boost(self, player_id):
+        """Trigger a short throttle impulse when collecting a boost star."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.STAR_BOOST)
+            manager.add_effect(
+                HapticEffect.STAR_BOOST,
+                intensity=1.0,
+                duration=Config.BOOST_THROTTLE_IMPULSE_DURATION
+            )
+
+    def trigger_asteroid_bounce(self, player_id, steering_direction):
+        """Trigger steering and throttle impulse for boosted asteroid bounce."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.ASTEROID_BOUNCE)
+            self.asteroid_bounce_steering_direction[player_id] = steering_direction
+            self.asteroid_bounce_steering_vibration_phase[player_id] = 0.0
+            manager.add_effect(
+                HapticEffect.ASTEROID_BOUNCE,
+                intensity=1.0,
+                duration=Config.ASTEROID_BOUNCE_FORCE_DURATION
+            )
     
     def get_active_effects(self, player_id):
         """Get list of active effects for a player"""

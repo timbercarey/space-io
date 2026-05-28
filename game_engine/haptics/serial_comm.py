@@ -37,9 +37,17 @@ class SerialComm:
             1: {'steering': 0, 'throttle': 0},
             2: {'steering': 0, 'throttle': 0}
         }
-        self.throttle_zero_offsets = {
-            1: 0,
-            2: 0
+        self.zero_offsets = {
+            1: {'steering': 0, 'throttle': 0},
+            2: {'steering': 0, 'throttle': 0}
+        }
+        self.latest_controls = {
+            'difficulty': 3,
+            'player2_enabled': False,
+            'received': False,
+            'pin25_active': None,
+            'pin26_active': None,
+            'pin9_active': None
         }
         
         if not simulation_mode:
@@ -62,7 +70,7 @@ class SerialComm:
             self.simulation_mode = True
             self.connected = False
     
-    def send_forces(self, p1_steer, p1_throttle, p2_steer=0, p2_throttle=0):
+    def send_forces(self, p1_steer, p1_throttle, p2_steer=0, p2_throttle=0, led_mask=0):
         """
         Send force commands to Teensy
         
@@ -71,6 +79,7 @@ class SerialComm:
             p1_throttle: Player 1 throttle force (-1000 to 1000)
             p2_steer: Player 2 steering force (-1000 to 1000)
             p2_throttle: Player 2 throttle force (-1000 to 1000)
+            led_mask: Player LED status bitmask
         """
         if self.simulation_mode or not self.connected:
             return
@@ -80,14 +89,21 @@ class SerialComm:
         p2_steer *= Config.STEERING_FORCE_DIRECTION
         p2_throttle *= Config.THROTTLE_FORCE_DIRECTION
 
-        # Format: F,P1S,P1T,P2S,P2T\n
-        message = f"F,{int(p1_steer)},{int(p1_throttle)},{int(p2_steer)},{int(p2_throttle)}\n"
+        # Format: F,P1S,P1T,P2S,P2T,LED_MASK\n
+        message = (
+            f"F,{int(p1_steer)},{int(p1_throttle)},"
+            f"{int(p2_steer)},{int(p2_throttle)},{int(led_mask)}\n"
+        )
         
         try:
             self.serial_port.write(message.encode('ascii'))
         except serial.SerialException as e:
             print(f"Error sending forces: {e}")
             self.connected = False
+
+    def stop_forces(self):
+        """Command all motors to stop."""
+        self.send_forces(0, 0, 0, 0)
     
     def read_positions(self):
         """
@@ -119,14 +135,14 @@ class SerialComm:
         Parse position data from Teensy
         
         Expected format:
-        P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US]
+        P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US][,DIFFICULTY,P2_ENABLED[,PIN25_ACTIVE,PIN26_ACTIVE,PIN9_ACTIVE]]
 
         The older position-only format is still accepted:
         P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS
         """
         try:
             parts = line.split(',')
-            if parts[0] != 'P' or len(parts) not in (5, 9, 10):
+            if parts[0] != 'P' or len(parts) not in (5, 9, 10, 11, 12, 14, 15):
                 return
             
             # Parse raw encoder counts
@@ -135,14 +151,20 @@ class SerialComm:
             p2_steer_counts = int(parts[3])
             p2_throttle_counts = int(parts[4])
             
-            p1_steer = self._normalize_encoder_counts(p1_steer_counts, 'steering')
+            p1_steer = self._normalize_encoder_counts(
+                p1_steer_counts - self.zero_offsets[1]['steering'],
+                'steering'
+            )
             p1_throttle = self._normalize_encoder_counts(
-                p1_throttle_counts - self.throttle_zero_offsets[1],
+                p1_throttle_counts - self.zero_offsets[1]['throttle'],
                 'throttle'
             )
-            p2_steer = self._normalize_encoder_counts(p2_steer_counts, 'steering')
+            p2_steer = self._normalize_encoder_counts(
+                p2_steer_counts - self.zero_offsets[2]['steering'],
+                'steering'
+            )
             p2_throttle = self._normalize_encoder_counts(
-                p2_throttle_counts - self.throttle_zero_offsets[2],
+                p2_throttle_counts - self.zero_offsets[2]['throttle'],
                 'throttle'
             )
 
@@ -151,7 +173,7 @@ class SerialComm:
             p2_steer_velocity = self.latest_velocities[2]['steering']
             p2_throttle_velocity = self.latest_velocities[2]['throttle']
 
-            if len(parts) == 9:
+            if len(parts) >= 9:
                 self.has_velocity_data = True
                 self.latest_velocity_sample_age_sec = 0.0
                 self.latest_velocity_receive_time = time.perf_counter()
@@ -171,26 +193,21 @@ class SerialComm:
                     float(parts[8]),
                     'throttle'
                 )
-            elif len(parts) == 10:
-                self.has_velocity_data = True
+
+            if len(parts) in (10, 12, 15):
                 self.latest_velocity_sample_age_sec = max(0.0, float(parts[9]) / 1000000.0)
-                self.latest_velocity_receive_time = time.perf_counter()
-                p1_steer_velocity = self._normalize_encoder_velocity(
-                    float(parts[5]),
-                    'steering'
-                )
-                p1_throttle_velocity = self._normalize_encoder_velocity(
-                    float(parts[6]),
-                    'throttle'
-                )
-                p2_steer_velocity = self._normalize_encoder_velocity(
-                    float(parts[7]),
-                    'steering'
-                )
-                p2_throttle_velocity = self._normalize_encoder_velocity(
-                    float(parts[8]),
-                    'throttle'
-                )
+
+            if len(parts) in (11, 12, 14, 15):
+                switch_offset = -5 if len(parts) in (14, 15) else -2
+                difficulty = int(parts[switch_offset])
+                self.latest_controls['difficulty'] = max(1, min(3, difficulty))
+                self.latest_controls['player2_enabled'] = int(parts[switch_offset + 1]) != 0
+                self.latest_controls['received'] = True
+
+                if len(parts) in (14, 15):
+                    self.latest_controls['pin25_active'] = int(parts[-3]) != 0
+                    self.latest_controls['pin26_active'] = int(parts[-2]) != 0
+                    self.latest_controls['pin9_active'] = int(parts[-1]) != 0
             
             # Update latest raw counts
             self.latest_encoder_counts[1]['steering'] = p1_steer_counts
@@ -285,28 +302,53 @@ class SerialComm:
             }
         )
 
+    def get_control_switch_snapshot(self, refresh=False):
+        """Return latest hardware game-mode switch state."""
+        if refresh:
+            self.read_positions()
+
+        return self.latest_controls.copy()
+
     def has_hardware_velocity_data(self):
         """Return True after receiving at least one velocity-bearing packet."""
         return self._hardware_velocity_is_fresh()
 
-    def zero_throttle(self, player_ids=None):
-        """Use the current raw throttle count as zero for selected players."""
+    def zero_inputs(self, player_ids=None, axes=None, refresh=True):
+        """Use the current raw encoder counts as zero for selected players/axes."""
+        if refresh:
+            self.read_positions()
+
         if player_ids is None:
             player_ids = self.latest_encoder_counts.keys()
+        if axes is None:
+            axes = ('steering', 'throttle')
 
         for player_id in player_ids:
             if player_id not in self.latest_encoder_counts:
                 continue
 
-            self.throttle_zero_offsets[player_id] = (
-                self.latest_encoder_counts[player_id]['throttle']
-            )
-            self.latest_positions[player_id]['throttle'] = 0.0
+            for axis in axes:
+                if axis not in self.latest_encoder_counts[player_id]:
+                    continue
+
+                self.zero_offsets[player_id][axis] = (
+                    self.latest_encoder_counts[player_id][axis]
+                )
+                self.latest_positions[player_id][axis] = 0.0
         
-        return self.throttle_zero_offsets.copy()
+        return {
+            player_id: axes.copy()
+            for player_id, axes in self.zero_offsets.items()
+        }
+
+    def zero_throttle(self, player_ids=None):
+        """Use the current raw throttle count as zero for selected players."""
+        return self.zero_inputs(player_ids, axes=('throttle',))
     
     def close(self):
         """Close serial connection"""
         if self.serial_port and self.connected:
+            self.stop_forces()
+            time.sleep(0.02)
             self.serial_port.close()
             print("Serial connection closed")

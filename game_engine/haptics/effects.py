@@ -10,6 +10,8 @@ class HapticEffect(Enum):
     TRAIL_VIBRATION = 1
     MINE_KICKBACK = 2
     SPEED_DAMPING = 3
+    ASTEROID_BOUNCE = 4
+    STAR_BOOST = 5
 
 class EffectState:
     """State of a haptic effect"""

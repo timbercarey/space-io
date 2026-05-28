@@ -2,15 +2,16 @@
  * Space IO - Teensy 4.1 Controller
  *
  * Reads four hardware quadrature encoder channels, reports raw counts and
- * calculated velocities to the laptop, and forwards player 1 force commands to
- * the Hapkit motor board.
+ * calculated velocities to the laptop, and forwards player force commands to
+ * two Hapkit motor boards.
  *
  * Message Format:
- *   FROM LAPTOP: F,P1S,P1T,P2S,P2T\n
+ *   FROM LAPTOP: F,P1S,P1T,P2S,P2T[,LED_MASK]\n
  *   TO LAPTOP:   P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US]\n
  *
  * Force values are integers (-1000 to 1000). Encoder positions are raw counts.
  * Encoder velocities are filtered counts per second.
+ latest
  */
 
 #include "config.h"
@@ -70,16 +71,67 @@ VelocityState p2ThrottleVelocityState = {0, 0, 0, 0, 0.0f, true};
 
 int p1SteeringForce = 0;
 int p1ThrottleForce = 0;
+int p2SteeringForce = 0;
+int p2ThrottleForce = 0;
+
+enum Player1SwitchPosition {
+  P1_SWITCH_CENTER = 0,
+  P1_SWITCH_POSITION_1 = 1,
+  P1_SWITCH_POSITION_2 = 2,
+  P1_SWITCH_BOTH_ACTIVE = 3
+};
+
+Player1SwitchPosition p1SwitchPosition = P1_SWITCH_CENTER;
+bool p2SwitchActive = false;
 
 unsigned long lastControlUpdate = 0;
 unsigned long lastPositionSend = 0;
+unsigned long lastForceCommandMillis = 0;
+unsigned long lastLedFlashToggle = 0;
+unsigned long lastStarLedFlashToggle = 0;
+unsigned long lastDeathLedFlashToggle = 0;
+bool ledFlashOn = false;
+bool starLedFlashOn = false;
+bool deathLedFlashOn = false;
+bool p1LedPresent = true;
+bool p1LedStarActive = false;
+bool p1LedDead = false;
+bool p2LedPresent = false;
+bool p2LedStarActive = false;
+bool p2LedDead = false;
 
 const unsigned long CONTROL_UPDATE_INTERVAL_US = 1000000UL / CONTROL_UPDATE_RATE;
 const unsigned long POSITION_SEND_INTERVAL_MS = 1000UL / POSITION_UPDATE_RATE;
+const unsigned long LED_FLASH_INTERVAL_MS = 250;
+const unsigned long STAR_LED_FLASH_INTERVAL_MS = 180;
+const unsigned long DEATH_LED_FLASH_INTERVAL_MS = 70;
+const int LED_MASK_P1_PRESENT = 1 << 0;
+const int LED_MASK_P1_STAR = 1 << 1;
+const int LED_MASK_P1_DEAD = 1 << 2;
+const int LED_MASK_P2_PRESENT = 1 << 3;
+const int LED_MASK_P2_STAR = 1 << 4;
+const int LED_MASK_P2_DEAD = 1 << 5;
+
+void sendForcesToHapkit(Print& hapkitSerial, int steeringForce, int throttleForce);
+byte forceToHapkitCommand(int force);
+void stopForcesIfLaptopTimedOut();
+void setupPlayerControls();
+void readPlayerControls();
+Player1SwitchPosition readPlayer1Switch();
+bool readPlayer2Switch();
+int player1DifficultyLevel();
+void updateLedFlashTest();
+void applyLedStatusMask(int ledMask);
+void updateGameStatusLeds();
+void setPlayer1Leds(bool led1On, bool led2On);
+void setPlayer2Leds(bool led1On, bool led2On);
 
 void setup() {
   LAPTOP_SERIAL.begin(LAPTOP_BAUD_RATE);
-  HAPKIT_SERIAL.begin(HAPKIT_BAUD_RATE);
+  HAPKIT_A_SERIAL.begin(HAPKIT_BAUD_RATE);
+  HAPKIT_B_SERIAL.begin(HAPKIT_BAUD_RATE);
+
+  setupPlayerControls();
 
   p1SteeringEncoder.setInitConfig();
   p1SteeringEncoder.init();
@@ -99,6 +151,7 @@ void setup() {
   delay(500);
   lastControlUpdate = micros();
   lastPositionSend = millis();
+  lastForceCommandMillis = millis();
   LAPTOP_SERIAL.println("Teensy Controller Ready");
 }
 
@@ -112,6 +165,12 @@ void loop() {
   }
 
   unsigned long currentMillis = millis();
+#if LED_FLASH_TEST_ENABLED
+  updateLedFlashTest();
+#else
+  updateGameStatusLeds();
+#endif
+
   if (currentMillis - lastPositionSend >= POSITION_SEND_INTERVAL_MS) {
     sendPositionsToLaptop();
     lastPositionSend = currentMillis;
@@ -120,8 +179,89 @@ void loop() {
 
 void updateControlLoop(unsigned long elapsedMicros) {
   readEncoders();
+  readPlayerControls();
   updateVelocities(elapsedMicros);
-  sendForcesToHapkit(p1SteeringForce, p1ThrottleForce);
+  stopForcesIfLaptopTimedOut();
+  // Logical game P1 is the 3-way-switch station on hardware channel B.
+  // Logical game P2 is the optional 2-way-switch station on hardware channel A.
+  sendForcesToHapkit(HAPKIT_A_SERIAL, p2SteeringForce, p2ThrottleForce);
+  sendForcesToHapkit(HAPKIT_B_SERIAL, p1SteeringForce, p1ThrottleForce);
+}
+
+void setupPlayerControls() {
+  pinMode(P1_LED_1_PIN, OUTPUT);
+  pinMode(P1_LED_2_PIN, OUTPUT);
+  pinMode(P2_LED_1_PIN, OUTPUT);
+  pinMode(P2_LED_2_PIN, OUTPUT);
+
+  digitalWrite(P1_LED_1_PIN, LED_OFF_LEVEL);
+  digitalWrite(P1_LED_2_PIN, LED_OFF_LEVEL);
+  digitalWrite(P2_LED_1_PIN, P2_LED_1_OFF_LEVEL);
+  digitalWrite(P2_LED_2_PIN, LED_OFF_LEVEL);
+
+  pinMode(P1_SWITCH_POSITION_1_PIN, P1_SWITCH_INPUT_MODE);
+  pinMode(P1_SWITCH_POSITION_2_PIN, P1_SWITCH_INPUT_MODE);
+  pinMode(P2_SWITCH_PIN, P2_SWITCH_INPUT_MODE);
+
+  readPlayerControls();
+}
+
+void readPlayerControls() {
+  p1SwitchPosition = readPlayer1Switch();
+  p2SwitchActive = readPlayer2Switch();
+}
+
+Player1SwitchPosition readPlayer1Switch() {
+  bool position1Active = digitalRead(P1_SWITCH_POSITION_1_PIN) == P1_SWITCH_ACTIVE_LEVEL;
+  bool position2Active = digitalRead(P1_SWITCH_POSITION_2_PIN) == P1_SWITCH_ACTIVE_LEVEL;
+
+  if (position1Active && position2Active) {
+    return P1_SWITCH_BOTH_ACTIVE;
+  }
+  if (position1Active) {
+    return P1_SWITCH_POSITION_1;
+  }
+  if (position2Active) {
+    return P1_SWITCH_POSITION_2;
+  }
+  return P1_SWITCH_CENTER;
+}
+
+bool readPlayer2Switch() {
+  return digitalRead(P2_SWITCH_PIN) == P2_SWITCH_ACTIVE_LEVEL;
+}
+
+int player1DifficultyLevel() {
+  if (p1SwitchPosition == P1_SWITCH_POSITION_1) {
+    return 1;
+  }
+  if (p1SwitchPosition == P1_SWITCH_POSITION_2) {
+    return 3;
+  }
+  return 2;
+}
+
+void updateLedFlashTest() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastLedFlashToggle < LED_FLASH_INTERVAL_MS) {
+    return;
+  }
+
+  lastLedFlashToggle = currentMillis;
+  ledFlashOn = !ledFlashOn;
+  setPlayer1Leds(ledFlashOn, ledFlashOn);
+  setPlayer2Leds(ledFlashOn, ledFlashOn);
+}
+
+void setPlayer1Leds(bool led1On, bool led2On) {
+  digitalWrite(P1_LED_1_PIN, led1On ? LED_ON_LEVEL : LED_OFF_LEVEL);
+  digitalWrite(P1_LED_2_PIN, led2On ? LED_ON_LEVEL : LED_OFF_LEVEL);
+}
+
+void setPlayer2Leds(bool led1On, bool led2On) {
+  digitalWrite(P2_LED_1_PIN, led2On ? P2_LED_1_ON_LEVEL : P2_LED_1_OFF_LEVEL);
+  digitalWrite(P2_LED_2_PIN, led1On ? LED_ON_LEVEL : LED_OFF_LEVEL);
 }
 
 void readEncoders() {
@@ -355,26 +495,80 @@ void readFromLaptop() {
 }
 
 void processLaptopMessage(char* message) {
-  // Expected format: F,P1S,P1T,P2S,P2T
-  // Example: F,500,-200,0,0
+  // Expected format: F,P1S,P1T,P2S,P2T[,LED_MASK]
+  // Example: F,500,-200,0,0,11
   if (message[0] != 'F') {
     return;
   }
 
-  int p1s, p1t, p2s, p2t;
-  int parsed = sscanf(message, "F,%d,%d,%d,%d", &p1s, &p1t, &p2s, &p2t);
+  int p1s, p1t, p2s, p2t, ledMask;
+  int parsed = sscanf(message, "F,%d,%d,%d,%d,%d", &p1s, &p1t, &p2s, &p2t, &ledMask);
 
-  if (parsed == 4) {
+  if (parsed >= 4) {
     p1SteeringForce = constrain(p1s, -1000, 1000);
     p1ThrottleForce = constrain(p1t, -1000, 1000);
-
-    // Player 2 forces are parsed to keep the laptop protocol stable.
-    (void)p2s;
-    (void)p2t;
+    p2SteeringForce = constrain(p2s, -1000, 1000);
+    p2ThrottleForce = constrain(p2t, -1000, 1000);
+    if (parsed >= 5) {
+      applyLedStatusMask(ledMask);
+    }
+    lastForceCommandMillis = millis();
   }
 }
 
-void sendForcesToHapkit(int steeringForce, int throttleForce) {
+void applyLedStatusMask(int ledMask) {
+  p1LedPresent = (ledMask & LED_MASK_P1_PRESENT) != 0;
+  p1LedStarActive = (ledMask & LED_MASK_P1_STAR) != 0;
+  p1LedDead = (ledMask & LED_MASK_P1_DEAD) != 0;
+  p2LedPresent = (ledMask & LED_MASK_P2_PRESENT) != 0;
+  p2LedStarActive = (ledMask & LED_MASK_P2_STAR) != 0;
+  p2LedDead = (ledMask & LED_MASK_P2_DEAD) != 0;
+}
+
+void updateGameStatusLeds() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastStarLedFlashToggle >= STAR_LED_FLASH_INTERVAL_MS) {
+    lastStarLedFlashToggle = currentMillis;
+    starLedFlashOn = !starLedFlashOn;
+  }
+
+  if (currentMillis - lastDeathLedFlashToggle >= DEATH_LED_FLASH_INTERVAL_MS) {
+    lastDeathLedFlashToggle = currentMillis;
+    deathLedFlashOn = !deathLedFlashOn;
+  }
+
+  bool p1Led1On = p1LedPresent;
+  bool p1Led2On = p1LedStarActive && starLedFlashOn;
+  bool p2Led1On = p2LedPresent;
+  bool p2Led2On = p2LedStarActive && starLedFlashOn;
+
+  if (p1LedDead) {
+    p1Led1On = deathLedFlashOn;
+    p1Led2On = deathLedFlashOn;
+  }
+
+  if (p2LedDead) {
+    p2Led1On = deathLedFlashOn;
+    p2Led2On = deathLedFlashOn;
+  }
+
+  setPlayer1Leds(p1Led1On, p1Led2On);
+  setPlayer2Leds(p2Led1On, p2Led2On);
+}
+
+void stopForcesIfLaptopTimedOut() {
+  if (millis() - lastForceCommandMillis <= FORCE_COMMAND_TIMEOUT_MS) {
+    return;
+  }
+
+  p1SteeringForce = 0;
+  p1ThrottleForce = 0;
+  p2SteeringForce = 0;
+  p2ThrottleForce = 0;
+}
+
+void sendForcesToHapkit(Print& hapkitSerial, int steeringForce, int throttleForce) {
   byte steeringCommand = forceToHapkitCommand(steeringForce);
   byte throttleCommand = forceToHapkitCommand(throttleForce);
 
@@ -383,10 +577,10 @@ void sendForcesToHapkit(int steeringForce, int throttleForce) {
   byte hapkitChannel2Command = steeringCommand;
   byte checksum = (byte)(hapkitChannel1Command + hapkitChannel2Command);
 
-  HAPKIT_SERIAL.write((byte)0xAA);
-  HAPKIT_SERIAL.write(hapkitChannel1Command);
-  HAPKIT_SERIAL.write(hapkitChannel2Command);
-  HAPKIT_SERIAL.write(checksum);
+  hapkitSerial.write((byte)0xAA);
+  hapkitSerial.write(hapkitChannel1Command);
+  hapkitSerial.write(hapkitChannel2Command);
+  hapkitSerial.write(checksum);
 }
 
 byte forceToHapkitCommand(int force) {
@@ -412,27 +606,37 @@ byte forceToHapkitCommand(int force) {
 }
 
 void sendPositionsToLaptop() {
-  // Format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US]
+  // Format: P,P1S_COUNTS,P1T_COUNTS,P2S_COUNTS,P2T_COUNTS,P1S_VEL,P1T_VEL,P2S_VEL,P2T_VEL[,VEL_AGE_US],DIFFICULTY,P2_ENABLED,PIN25_ACTIVE,PIN26_ACTIVE,PIN9_ACTIVE
   LAPTOP_SERIAL.print("P,");
-  LAPTOP_SERIAL.print(p1SteeringCounts);
-  LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.print(p1ThrottleCounts);
-  LAPTOP_SERIAL.print(",");
+  // Logical game P1 is the 3-way-switch station on hardware channel B.
   LAPTOP_SERIAL.print(p2SteeringCounts);
   LAPTOP_SERIAL.print(",");
   LAPTOP_SERIAL.print(p2ThrottleCounts);
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.print(p1SteeringVelocity, 2);
+  // Logical game P2 is the optional 2-way-switch station on hardware channel A.
+  LAPTOP_SERIAL.print(p1SteeringCounts);
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.print(p1ThrottleVelocity, 2);
+  LAPTOP_SERIAL.print(p1ThrottleCounts);
   LAPTOP_SERIAL.print(",");
   LAPTOP_SERIAL.print(p2SteeringVelocity, 2);
   LAPTOP_SERIAL.print(",");
   LAPTOP_SERIAL.print(p2ThrottleVelocity, 2);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(p1SteeringVelocity, 2);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(p1ThrottleVelocity, 2);
 #if VELOCITY_SEND_SAMPLE_AGE_ENABLED
   LAPTOP_SERIAL.print(",");
-  LAPTOP_SERIAL.println(latestVelocitySampleAgeUs());
-#else
-  LAPTOP_SERIAL.println();
+  LAPTOP_SERIAL.print(latestVelocitySampleAgeUs());
 #endif
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(player1DifficultyLevel());
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(p2SwitchActive ? 1 : 0);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(digitalRead(P1_SWITCH_POSITION_1_PIN) == P1_SWITCH_ACTIVE_LEVEL ? 1 : 0);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.print(digitalRead(P1_SWITCH_POSITION_2_PIN) == P1_SWITCH_ACTIVE_LEVEL ? 1 : 0);
+  LAPTOP_SERIAL.print(",");
+  LAPTOP_SERIAL.println(digitalRead(P2_SWITCH_PIN) == P2_SWITCH_ACTIVE_LEVEL ? 1 : 0);
 }

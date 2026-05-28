@@ -12,6 +12,7 @@
 // Serial2 = pins 7 (RX) and 8 (TX)
 // Serial3 = pins 15 (RX) and 14 (TX)
 // Serial4 = pins 16 (RX) and 17 (TX)
+// Serial7 = pins 28 (RX) and 29 (TX)
 // etc.
 
 // Encoder assignments for Teensy 4.1 hardware quadrature channels
@@ -31,12 +32,36 @@
 #define P2_THROTTLE_ENCODER_A 30
 #define P2_THROTTLE_ENCODER_B 31
 
-// Hapkit motor command serial link.
-// Serial4 TX is pin 17 on Teensy 4.1.
-#define HAPKIT_SERIAL Serial4
+// Hapkit motor command serial links.
+// Module A receives player 1 force commands. Module B receives player 2.
+// Only TX is needed for the motor command stream.
+#define HAPKIT_A_SERIAL Serial4  // TX pin 17
+#define HAPKIT_B_SERIAL Serial7  // TX pin 29
 #define HAPKIT_STOP_COMMAND 127
 #define HAPKIT_MAX_FORWARD_COMMAND 255
 #define HAPKIT_MAX_REVERSE_COMMAND 0
+
+// Player switch and LED panel wiring. The 3-way switch drives the Teensy inputs
+// high when active. The 2-way switch uses the opposite state from the grounded
+// position to enable player 2.
+#define P1_LED_1_PIN 28
+#define P1_LED_2_PIN 27
+#define P1_SWITCH_POSITION_1_PIN 25
+#define P1_SWITCH_POSITION_2_PIN 26
+#define P1_SWITCH_INPUT_MODE INPUT_PULLDOWN
+#define P1_SWITCH_ACTIVE_LEVEL HIGH
+
+#define P2_LED_1_PIN 41
+#define P2_LED_2_PIN 40
+#define P2_SWITCH_PIN 9
+#define P2_SWITCH_INPUT_MODE INPUT_PULLUP
+#define P2_SWITCH_ACTIVE_LEVEL HIGH
+
+#define LED_ON_LEVEL LOW
+#define LED_OFF_LEVEL HIGH
+#define P2_LED_1_ON_LEVEL HIGH
+#define P2_LED_1_OFF_LEVEL LOW
+#define LED_FLASH_TEST_ENABLED 0
 
 // Communication settings
 #define LAPTOP_BAUD_RATE 1000000
@@ -44,6 +69,7 @@
 #define BAUD_RATE LAPTOP_BAUD_RATE
 #define POSITION_UPDATE_RATE 500  // Hz
 #define CONTROL_UPDATE_RATE 1000 // Hz
+#define FORCE_COMMAND_TIMEOUT_MS 100
 
 // Encoder velocity settings
 #define VELOCITY_FILTER_ALPHA 0.45f
