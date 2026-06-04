@@ -6,6 +6,9 @@
  *
  * Packet format:
  *   0xAA,STEERING_BYTE,THROTTLE_BYTE,CHECKSUM
+
+ * Pin notes: A motor: Tx 17 to Hapkit, Rx Steering A (right)  is 0 and 1 (encoder), Throttle A is 2 and 3 (encoder). Steering B is is 7 and 8. Throttle B is 30 and 31. Module B Tx to Hapkit is pin 29.
+ latest
  */
 
 #include "config.h"

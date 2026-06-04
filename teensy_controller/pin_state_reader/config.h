@@ -1,0 +1,35 @@
+/*
+ * Pin constants copied from ../config.h for the standalone pin state reader.
+ */
+
+#ifndef PIN_STATE_READER_CONFIG_H
+#define PIN_STATE_READER_CONFIG_H
+
+#define P1_STEERING_ENCODER_A 0
+#define P1_STEERING_ENCODER_B 1
+
+#define P1_THROTTLE_ENCODER_A 2
+#define P1_THROTTLE_ENCODER_B 3
+
+#define P2_STEERING_ENCODER_A 7
+#define P2_STEERING_ENCODER_B 8
+
+#define P2_THROTTLE_ENCODER_A 30
+#define P2_THROTTLE_ENCODER_B 31
+
+#define P1_LED_1_PIN 28
+#define P1_LED_2_PIN 27
+#define P1_SWITCH_POSITION_1_PIN 25
+#define P1_SWITCH_POSITION_2_PIN 26
+#define P1_SWITCH_INPUT_MODE INPUT_PULLDOWN
+#define P1_SWITCH_ACTIVE_LEVEL HIGH
+
+#define P2_LED_1_PIN 41
+#define P2_LED_2_PIN 40
+#define P2_SWITCH_PIN 9
+#define P2_SWITCH_INPUT_MODE INPUT_PULLUP
+#define P2_SWITCH_ACTIVE_LEVEL HIGH
+
+#define LAPTOP_BAUD_RATE 1000000
+
+#endif

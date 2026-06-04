@@ -1,6 +1,8 @@
 """
 Visualize haptic forces on screen for debugging/simulation
 """
+import time
+
 import pygame
 from config import Config
 from .effects import HapticEffect
@@ -25,6 +27,8 @@ class ForceVisualizer:
             controller: Controller instance
             game_state: GameState instance
         """
+        self._render_switch_debug(game_state)
+
         # Player 1 on left side
         if 1 in game_state.ships:
             if Config.SHOW_KNOB_VELOCITY_PLOT:
@@ -76,6 +80,77 @@ class ForceVisualizer:
                 controller=controller,
                 game_state=game_state
             )
+
+    def _render_switch_debug(self, game_state):
+        """Render raw hardware switch state in the haptic/debug overlay."""
+        panel_width = 390
+        panel_height = 146
+        x = (Config.WINDOW_WIDTH - panel_width) // 2
+        y = 58
+        panel_rect = pygame.Rect(x, y, panel_width, panel_height)
+        pygame.draw.rect(self.screen, (24, 28, 32), panel_rect)
+        pygame.draw.rect(self.screen, (90, 150, 170), panel_rect, 2)
+
+        packet_received = getattr(game_state, 'hardware_switch_packet_received', False)
+        difficulty = getattr(game_state, 'hardware_difficulty_switch', None)
+        p2_enabled = getattr(game_state, 'hardware_player2_enabled', None)
+        pin25_active = getattr(game_state, 'hardware_pin25_active', None)
+        pin26_active = getattr(game_state, 'hardware_pin26_active', None)
+        pin9_active = getattr(game_state, 'hardware_pin9_active', None)
+        profile = Config.DIFFICULTY_PROFILES.get(difficulty, {})
+        difficulty_name = profile.get("name", "unknown")
+
+        change_time = getattr(game_state, 'hardware_switch_change_time', None)
+        change_message = getattr(game_state, 'hardware_switch_change_message', "")
+        change_age = (
+            time.perf_counter() - change_time
+            if change_time is not None
+            else None
+        )
+        recent_change = change_age is not None and change_age <= 2.0
+
+        lines = [
+            "Hardware Switches",
+            f"Switch packet: {'received' if packet_received else 'not received'}",
+            (
+                f"SWITCH CHANGE DETECTED: {change_message}"
+                if recent_change
+                else "Switch change: waiting"
+            ),
+            (
+                f"Active pins: 25={1 if pin25_active else 0}  "
+                f"26={1 if pin26_active else 0}  "
+                f"9={1 if pin9_active else 0}"
+                if pin25_active is not None
+                else "Raw pins: --"
+            ),
+            (
+                f"3-way primary: {difficulty} ({difficulty_name})"
+                if difficulty is not None
+                else "3-way primary: --"
+            ),
+            (
+                f"2-way optional: {'P2 enabled' if p2_enabled else 'P2 disabled'}"
+                if p2_enabled is not None
+                else "2-way optional: --"
+            ),
+            f"Game: {game_state.num_players} player(s), {len(game_state.mines)} asteroid(s)",
+        ]
+
+        colors = [
+            (235, 245, 255),
+            (130, 230, 150) if packet_received else (255, 165, 100),
+            (120, 255, 170) if recent_change else (145, 145, 145),
+            (220, 220, 120),
+            (210, 225, 235),
+            (210, 225, 235),
+            (180, 220, 230),
+        ]
+
+        for index, line in enumerate(lines):
+            font = self.font if index == 0 else self.small_font
+            surface = font.render(line, True, colors[index])
+            self.screen.blit(surface, (x + 12, y + 8 + index * 18))
     
     def _render_player_forces(self, player_id, x, y, force_calculator, controller, game_state):
         """Render force display for one player"""
@@ -107,7 +182,10 @@ class ForceVisualizer:
         throttle_input = controller.get_throttle(player_id)
 
         steering_wall_markers = []
-        if Config.STEERING_HAPTIC_MODE == Config.HAPTIC_MODE_VIRTUAL_WALLS:
+        if Config.STEERING_HAPTIC_MODE in (
+            Config.HAPTIC_MODE_VIRTUAL_WALLS,
+            Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
+        ):
             steering_wall_markers = self._get_wall_markers(
                 Config.STEERING_MOTION_RANGE_DEG,
                 Config.STEERING_CONTROL_ROTATION_RANGE
@@ -277,18 +355,37 @@ class ForceVisualizer:
         else:
             steering_position = controller.get_steering(player_id)
             steering_velocity = 0.0
-        damping_force = (
-            -steering_velocity
+        steering_damping_velocity = force_calculator._get_steering_damping_velocity(
+            player_id
+        )
+        raw_damping_force = (
+            -steering_damping_velocity
             * Config.STEERING_VELOCITY_DAMPING
             * force_calculator._calculate_speed_damping_scale(ship)
         )
+        raw_wall_damping_force = self._calculate_active_steering_wall_damping_force(
+            force_calculator,
+            steering_damping_velocity,
+            steering_position
+        )
+        capped_total_damping_force = force_calculator._limit_steering_damping_force(
+            raw_damping_force + raw_wall_damping_force
+        )
+        damping_force = force_calculator._limit_steering_damping_force(
+            raw_damping_force
+        )
+        wall_damping_force = capped_total_damping_force - damping_force
         spring_force = self._calculate_active_steering_spring_force(
             force_calculator,
             steering_position
         )
+        wall_force = self._calculate_active_steering_wall_force(
+            force_calculator,
+            steering_position
+        ) + wall_damping_force
 
         history = self.steering_force_component_history.setdefault(player_id, [])
-        history.append((now, damping_force, spring_force))
+        history.append((now, damping_force, spring_force, wall_force))
         cutoff = now - window_sec
         while history and history[0][0] < cutoff:
             history.pop(0)
@@ -321,7 +418,13 @@ class ForceVisualizer:
 
         damping_points = []
         spring_points = []
-        for sample_time, sample_damping, sample_spring in history:
+        wall_points = []
+        for sample in history:
+            if len(sample) == 3:
+                sample_time, sample_damping, sample_spring = sample
+                sample_wall = 0.0
+            else:
+                sample_time, sample_damping, sample_spring, sample_wall = sample
             time_fraction = (sample_time - cutoff) / window_sec
             px = plot_rect.left + int(max(0.0, min(1.0, time_fraction)) * plot_rect.width)
             damping_points.append((
@@ -332,22 +435,51 @@ class ForceVisualizer:
                 px,
                 self._force_to_plot_y(sample_spring, force_limit, plot_rect)
             ))
+            wall_points.append((
+                px,
+                self._force_to_plot_y(sample_wall, force_limit, plot_rect)
+            ))
 
         damping_color = (120, 210, 255)
         spring_color = (255, 210, 100)
+        wall_color = (255, 120, 120)
         self._draw_plot_line(damping_points, damping_color)
         self._draw_plot_line(spring_points, spring_color)
+        self._draw_plot_line(wall_points, wall_color)
 
         range_text = self.small_font.render(f"+/- {force_limit:.0f}", True, (150, 150, 150))
         self.screen.blit(range_text, (plot_rect.left, plot_rect.bottom + 2))
         damping_text = self.small_font.render(f"damp {damping_force:+.0f}", True, damping_color)
-        self.screen.blit(damping_text, (plot_rect.centerx - damping_text.get_width() - 8, plot_rect.bottom + 2))
+        self.screen.blit(damping_text, (plot_rect.left + 56, plot_rect.bottom + 2))
         spring_text = self.small_font.render(f"spring {spring_force:+.0f}", True, spring_color)
-        self.screen.blit(spring_text, (plot_rect.centerx + 8, plot_rect.bottom + 2))
+        self.screen.blit(spring_text, (plot_rect.centerx - 16, plot_rect.bottom + 2))
+        wall_text = self.small_font.render(f"wall {wall_force:+.0f}", True, wall_color)
+        self.screen.blit(wall_text, (plot_rect.right - wall_text.get_width(), plot_rect.bottom + 2))
 
     def _calculate_active_steering_spring_force(self, force_calculator, steering_position):
         """Return the steering spring component active in the selected steering mode."""
-        if Config.STEERING_HAPTIC_MODE == Config.HAPTIC_MODE_VIRTUAL_WALLS:
+        if Config.STEERING_HAPTIC_MODE in (
+            Config.HAPTIC_MODE_OFF,
+            Config.HAPTIC_MODE_DAMPER_ONLY,
+            Config.HAPTIC_MODE_VIRTUAL_WALLS
+        ):
+            return 0.0
+
+        return force_calculator._calculate_centering_spring(
+            steering_position,
+            Config.STEERING_CENTERING_SPRING_STIFFNESS
+        )
+
+    def _calculate_active_steering_wall_force(
+        self,
+        force_calculator,
+        steering_position
+    ):
+        """Return the elastic steering wall component active in the selected mode."""
+        if Config.STEERING_HAPTIC_MODE in (
+            Config.HAPTIC_MODE_VIRTUAL_WALLS,
+            Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
+        ):
             return force_calculator._calculate_virtual_wall(
                 steering_position,
                 Config.STEERING_MOTION_RANGE_DEG,
@@ -355,9 +487,61 @@ class ForceVisualizer:
                 Config.STEERING_VIRTUAL_WALL_STIFFNESS
             )
 
-        return force_calculator._calculate_centering_spring(
+        return 0.0
+
+    def _calculate_active_steering_wall_damping_force(
+        self,
+        force_calculator,
+        steering_velocity,
+        steering_position
+    ):
+        """Return raw extra damping from steering-wall entry before global cap."""
+        if Config.STEERING_HAPTIC_MODE not in (
+            Config.HAPTIC_MODE_VIRTUAL_WALLS,
+            Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS
+        ):
+            return 0.0
+
+        penetration = force_calculator._calculate_virtual_wall_penetration(
             steering_position,
-            Config.STEERING_CENTERING_SPRING_STIFFNESS
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if penetration <= 0.0:
+            return 0.0
+
+        outward_velocity = force_calculator._calculate_virtual_wall_outward_velocity(
+            steering_position,
+            steering_velocity,
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if outward_velocity <= 0.0:
+            return 0.0
+
+        if Config.STEERING_WALL_DAMPING_VELOCITY_HYSTERESIS_ENABLED:
+            enter_threshold = max(
+                0.0,
+                Config.STEERING_WALL_DAMPING_VELOCITY_ENTER_THRESHOLD
+            )
+            if outward_velocity < enter_threshold:
+                return 0.0
+
+        effective_penetration = (
+            force_calculator._steering_wall_damping_effective_penetration(
+                penetration
+            )
+        )
+        if effective_penetration <= 0.0:
+            return 0.0
+
+        damping_scale = force_calculator._steering_wall_damping_penetration_scale(
+            effective_penetration
+        )
+        return (
+            -steering_velocity
+            * Config.STEERING_VIRTUAL_WALL_INTO_WALL_DAMPING
+            * damping_scale
         )
 
     def _force_to_plot_y(self, force, force_limit, plot_rect):
@@ -480,6 +664,8 @@ class ForceVisualizer:
             HapticEffect.NONE: "None",
             HapticEffect.TRAIL_VIBRATION: "Trail Vibration",
             HapticEffect.MINE_KICKBACK: "Mine Kickback",
-            HapticEffect.SPEED_DAMPING: "Speed Damping"
+            HapticEffect.SPEED_DAMPING: "Speed Damping",
+            HapticEffect.ASTEROID_BOUNCE: "Asteroid Bounce",
+            HapticEffect.STAR_BOOST: "Star Boost"
         }
         return names.get(effect, "Unknown")

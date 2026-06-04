@@ -20,11 +20,28 @@ class ForceCalculator:
         
         # Timers for time-based effects
         self.vibration_phase = {1: 0.0, 2: 0.0}
+        self.throttle_position_pulse_phase = {1: 0.0, 2: 0.0}
+        self.mine_hit_steering_vibration_phase = {1: 0.0, 2: 0.0}
+        self.asteroid_bounce_steering_vibration_phase = {1: 0.0, 2: 0.0}
         self.axis_velocities = {
             1: {'steering': 0.0, 'throttle': 0.0},
             2: {'steering': 0.0, 'throttle': 0.0}
         }
+        self.steering_wall_damping_latched = {1: False, 2: False}
+        self.asteroid_bounce_steering_direction = {1: 1.0, 2: 1.0}
         self.velocity_estimator = AxisVelocityEstimator()
+        self.using_hardware_velocity = False
+        self._latest_position_velocity_snapshot = (
+            False,
+            {
+                1: {'steering': 0.0, 'throttle': 0.0},
+                2: {'steering': 0.0, 'throttle': 0.0}
+            },
+            {
+                1: {'steering': 0.0, 'throttle': 0.0},
+                2: {'steering': 0.0, 'throttle': 0.0}
+            }
+        )
         self._lock = threading.RLock()
     
     def update(self, dt, game_state=None, controller=None):
@@ -36,9 +53,12 @@ class ForceCalculator:
             # Update vibration phase for oscillation
             for player_id in self.vibration_phase:
                 self.vibration_phase[player_id] += dt
+                self.throttle_position_pulse_phase[player_id] += dt
+                self.mine_hit_steering_vibration_phase[player_id] += dt
+                self.asteroid_bounce_steering_vibration_phase[player_id] += dt
 
             if controller:
-                self._start_velocity_estimator(controller)
+                self._start_velocity_source(controller)
                 self._refresh_axis_velocities()
 
     def close(self):
@@ -62,37 +82,44 @@ class ForceCalculator:
                 return (0.0, 0.0)
 
             ship = game_state.ships[player_id]
-
-            if not ship.alive:
-                return (0.0, 0.0)
-
             manager = self.effect_managers[player_id]
+            apply_baseline_forces = (
+                ship.alive
+                or self._is_between_rounds_waiting_for_restart(game_state)
+            )
+
+            has_death_effect = (
+                manager.has_effect(HapticEffect.MINE_KICKBACK)
+                or manager.has_effect(HapticEffect.TRAIL_DEATH_IMPULSE)
+            )
+            if not apply_baseline_forces and not has_death_effect:
+                return (0.0, 0.0)
 
             # Start with base forces
             steering_force = 0.0
             throttle_force = 0.0
 
             # 1. Baseline axis forces.
-            if controller:
-                has_estimator_snapshot, positions, velocities = (
-                    self.velocity_estimator.get_position_velocity_snapshot()
+            if controller and apply_baseline_forces:
+                has_velocity_snapshot, positions, velocities = (
+                    self._get_position_velocity_snapshot(controller)
                 )
-                if has_estimator_snapshot:
-                    estimator_positions = positions.get(player_id, {})
-                    estimator_velocities = velocities.get(player_id, {})
-                    steering_position = estimator_positions.get(
+                if has_velocity_snapshot:
+                    velocity_positions = positions.get(player_id, {})
+                    velocity_values = velocities.get(player_id, {})
+                    steering_position = velocity_positions.get(
                         'steering',
                         controller.get_steering(player_id)
                     )
-                    throttle_position = estimator_positions.get(
+                    throttle_position = velocity_positions.get(
                         'throttle',
                         controller.get_throttle(player_id)
                     )
-                    self.axis_velocities[player_id]['steering'] = estimator_velocities.get(
+                    self.axis_velocities[player_id]['steering'] = velocity_values.get(
                         'steering',
                         self.axis_velocities[player_id]['steering']
                     )
-                    self.axis_velocities[player_id]['throttle'] = estimator_velocities.get(
+                    self.axis_velocities[player_id]['throttle'] = velocity_values.get(
                         'throttle',
                         self.axis_velocities[player_id]['throttle']
                     )
@@ -111,16 +138,40 @@ class ForceCalculator:
                     player_id,
                     throttle_position
                 )
+                throttle_force += self._calculate_throttle_position_pulse(
+                    ship,
+                    player_id,
+                    throttle_position
+                )
 
             # 2. Trail vibration
             if manager.has_effect(HapticEffect.TRAIL_VIBRATION):
                 vibration = self._calculate_trail_vibration(player_id)
                 steering_force += vibration
 
+            # 2b. Light warning vibration near a super blade
+            if manager.has_effect(HapticEffect.SUPER_BLADE_PROXIMITY):
+                steering_force += self._calculate_super_blade_steering_vibration(player_id)
+                throttle_force += self._calculate_super_blade_throttle_vibration(player_id)
+
             # 3. Mine kickback
             if manager.has_effect(HapticEffect.MINE_KICKBACK):
                 kickback = self._calculate_mine_kickback()
+                steering_force += self._calculate_mine_hit_steering_vibration(player_id)
                 throttle_force += kickback
+
+            # 3b. Player-trail death throttle impulse
+            if manager.has_effect(HapticEffect.TRAIL_DEATH_IMPULSE):
+                throttle_force += self._calculate_trail_death_throttle_impulse()
+
+            # 4. Asteroid bounce impulse while boosted
+            if manager.has_effect(HapticEffect.ASTEROID_BOUNCE):
+                steering_force += self._calculate_asteroid_bounce_steering_vibration(player_id)
+                throttle_force += Config.ASTEROID_BOUNCE_THROTTLE_FORCE
+
+            # 5. Faint forward throttle impulse when a star boost starts
+            if manager.has_effect(HapticEffect.STAR_BOOST):
+                throttle_force += Config.BOOST_THROTTLE_IMPULSE_FORCE
 
             # Clamp forces to valid range
             steering_force = max(-1000, min(1000, steering_force))
@@ -128,20 +179,46 @@ class ForceCalculator:
 
             return (steering_force, throttle_force)
 
+    def _is_between_rounds_waiting_for_restart(self, game_state):
+        """Return True while a non-final two-player round is resetting."""
+        return (
+            game_state.num_players == 2
+            and game_state.game_over
+            and game_state.get_match_winner() is None
+        )
+
     def _calculate_steering_baseline_force(self, ship, player_id, steering_position):
         """Calculate the selected steering force model before event effects."""
         mode = Config.STEERING_HAPTIC_MODE
+
+        if mode == Config.HAPTIC_MODE_OFF:
+            return 0.0
+
+        if mode == Config.HAPTIC_MODE_SPRING_ONLY:
+            return self._calculate_centering_spring(
+                steering_position,
+                Config.STEERING_CENTERING_SPRING_STIFFNESS
+            )
+
+        if mode == Config.HAPTIC_MODE_DAMPER_ONLY:
+            damping = self._calculate_steering_damping_force(
+                ship,
+                player_id,
+                steering_position,
+                include_wall_damping=False
+            )
+            return damping
 
         if mode == Config.HAPTIC_MODE_SPRING_DAMPER:
             spring = self._calculate_centering_spring(
                 steering_position,
                 Config.STEERING_CENTERING_SPRING_STIFFNESS
             )
-            damping = self._calculate_knob_damping(
+            damping = self._calculate_steering_damping_force(
                 ship,
                 player_id,
-                'steering',
-                Config.STEERING_VELOCITY_DAMPING
+                steering_position,
+                include_wall_damping=False
             )
             return spring + damping
 
@@ -152,19 +229,55 @@ class ForceCalculator:
                 Config.STEERING_CONTROL_ROTATION_RANGE,
                 Config.STEERING_VIRTUAL_WALL_STIFFNESS
             )
-            damping = self._calculate_knob_damping(
+            damping = self._calculate_steering_damping_force(
                 ship,
                 player_id,
-                'steering',
-                Config.STEERING_VELOCITY_DAMPING
+                steering_position,
+                include_wall_damping=True
             )
             return wall + damping
+
+        if mode == Config.HAPTIC_MODE_SPRING_DAMPER_WITH_WALLS:
+            spring = self._calculate_centering_spring(
+                steering_position,
+                Config.STEERING_CENTERING_SPRING_STIFFNESS
+            )
+            damping = self._calculate_steering_damping_force(
+                ship,
+                player_id,
+                steering_position,
+                include_wall_damping=True
+            )
+            wall = self._calculate_virtual_wall(
+                steering_position,
+                Config.STEERING_MOTION_RANGE_DEG,
+                Config.STEERING_CONTROL_ROTATION_RANGE,
+                Config.STEERING_VIRTUAL_WALL_STIFFNESS
+            )
+            return spring + damping + wall
 
         raise ValueError(f"Unknown steering haptic mode: {mode}")
 
     def _calculate_throttle_baseline_force(self, ship, player_id, throttle_position):
         """Calculate the selected throttle force model before event effects."""
         mode = Config.THROTTLE_HAPTIC_MODE
+
+        if mode == Config.HAPTIC_MODE_OFF:
+            return 0.0
+
+        if mode == Config.HAPTIC_MODE_SPRING_ONLY:
+            return self._calculate_centering_spring(
+                throttle_position,
+                Config.THROTTLE_CENTERING_SPRING_STIFFNESS
+            )
+
+        if mode == Config.HAPTIC_MODE_DAMPER_ONLY:
+            return self._calculate_knob_damping(
+                ship,
+                player_id,
+                'throttle',
+                Config.THROTTLE_VELOCITY_DAMPING
+            )
 
         if mode == Config.THROTTLE_HAPTIC_MODE_SPRING_DAMPER:
             return self._calculate_throttle_spring_damper_force(
@@ -276,9 +389,173 @@ class ForceCalculator:
         gate_fade = 1.0 - (penetration / gate_width)
         return -penetration * Config.THROTTLE_BOOST_PUSH_THROUGH_STIFFNESS * gate_fade
 
+    def _calculate_throttle_position_pulse(self, ship, player_id, throttle_position):
+        """Pulse throttle only after pushing past the normal forward wall while boosted."""
+        if not Config.THROTTLE_POSITION_PULSE_ENABLED or not ship.boost_active:
+            self.throttle_position_pulse_phase[player_id] = 0.0
+            return 0.0
+
+        normal_forward_wall = self._get_virtual_wall_limits(
+            Config.THROTTLE_MOTION_RANGE_DEG,
+            Config.THROTTLE_CONTROL_ROTATION_RANGE
+        )[1]
+        _brake_wall_position, peak_throttle_position = self._get_virtual_wall_limits(
+            Config.THROTTLE_MOTION_RANGE_DEG,
+            Config.THROTTLE_CONTROL_ROTATION_RANGE,
+            forward_extension_deg=Config.BOOST_THROTTLE_FORWARD_EXTENSION_DEG
+        )
+
+        if throttle_position <= normal_forward_wall:
+            self.throttle_position_pulse_phase[player_id] = 0.0
+            return 0.0
+
+        usable_range = max(0.001, peak_throttle_position - normal_forward_wall)
+        pulse_scale = max(
+            0.0,
+            min(1.0, (throttle_position - normal_forward_wall) / usable_range)
+        )
+        min_interval = max(0.001, Config.THROTTLE_POSITION_PULSE_MIN_INTERVAL_SEC)
+        max_interval = max(min_interval, Config.THROTTLE_POSITION_PULSE_MAX_INTERVAL_SEC)
+        interval = max_interval - (max_interval - min_interval) * pulse_scale
+        width = max(0.001, min(Config.THROTTLE_POSITION_PULSE_WIDTH_SEC, interval))
+
+        phase = self.throttle_position_pulse_phase[player_id] % interval
+        if phase >= width:
+            return 0.0
+
+        pulse_progress = phase / width
+        pulse_envelope = math.sin(math.pi * pulse_progress)
+        burst_frequency = max(1.0, Config.THROTTLE_POSITION_PULSE_BURST_FREQ)
+        burst_vibration = math.sin(2 * math.pi * burst_frequency * phase)
+        amplitude = max(0.0, Config.THROTTLE_POSITION_PULSE_FORCE)
+        return amplitude * pulse_envelope * burst_vibration
+
     def _calculate_centering_spring(self, position, stiffness):
         """Calculate a simple spring force toward normalized zero."""
         return -position * stiffness
+
+    def _calculate_steering_wall_damping(self, player_id, steering_position, velocity):
+        """Add damping only while steering is moving deeper into a wall."""
+        damping_coefficient = Config.STEERING_VIRTUAL_WALL_INTO_WALL_DAMPING
+        if damping_coefficient <= 0.0:
+            return 0.0
+
+        penetration = self._calculate_virtual_wall_penetration(
+            steering_position,
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if penetration <= 0.0:
+            self.steering_wall_damping_latched[player_id] = False
+            return 0.0
+
+        outward_velocity = self._calculate_virtual_wall_outward_velocity(
+            steering_position,
+            velocity,
+            Config.STEERING_MOTION_RANGE_DEG,
+            Config.STEERING_CONTROL_ROTATION_RANGE
+        )
+        if outward_velocity <= 0.0:
+            self.steering_wall_damping_latched[player_id] = False
+            return 0.0
+
+        if not self._steering_wall_damping_velocity_gate(player_id, outward_velocity):
+            return 0.0
+
+        penetration_after_threshold = self._steering_wall_damping_effective_penetration(
+            penetration
+        )
+        if penetration_after_threshold <= 0.0:
+            return 0.0
+
+        damping_scale = self._steering_wall_damping_penetration_scale(
+            penetration_after_threshold
+        )
+        return -velocity * damping_coefficient * damping_scale
+
+    def _calculate_steering_damping_force(
+        self,
+        ship,
+        player_id,
+        steering_position,
+        include_wall_damping
+    ):
+        """Calculate total steering damping, capped as one combined component."""
+        velocity = self._get_steering_damping_velocity(player_id)
+        damping = (
+            -velocity
+            * Config.STEERING_VELOCITY_DAMPING
+            * self._calculate_speed_damping_scale(ship)
+        )
+        if include_wall_damping:
+            damping += self._calculate_steering_wall_damping(
+                player_id,
+                steering_position,
+                velocity
+            )
+        return self._limit_steering_damping_force(damping)
+
+    def _get_steering_damping_velocity(self, player_id):
+        """Return steering velocity after optional direct clipping for damping."""
+        velocity = self.axis_velocities[player_id]['steering']
+        if not Config.STEERING_DAMPING_VELOCITY_CAP_ENABLED:
+            return velocity
+
+        limit = Config.STEERING_DAMPING_VELOCITY_LIMIT
+        if limit <= 0.0:
+            return velocity
+
+        return max(-limit, min(limit, velocity))
+
+    def _steering_wall_damping_velocity_gate(self, player_id, outward_velocity):
+        """Gate wall damping with optional outward-velocity hysteresis."""
+        if not Config.STEERING_WALL_DAMPING_VELOCITY_HYSTERESIS_ENABLED:
+            return True
+
+        enter_threshold = max(0.0, Config.STEERING_WALL_DAMPING_VELOCITY_ENTER_THRESHOLD)
+        exit_threshold = max(
+            0.0,
+            min(enter_threshold, Config.STEERING_WALL_DAMPING_VELOCITY_EXIT_THRESHOLD)
+        )
+        is_latched = self.steering_wall_damping_latched.get(player_id, False)
+
+        if is_latched:
+            if outward_velocity <= exit_threshold:
+                self.steering_wall_damping_latched[player_id] = False
+                return False
+            return True
+
+        if outward_velocity >= enter_threshold:
+            self.steering_wall_damping_latched[player_id] = True
+            return True
+
+        return False
+
+    def _steering_wall_damping_effective_penetration(self, penetration):
+        """Apply optional minimum penetration before wall damping can engage."""
+        if not Config.STEERING_WALL_DAMPING_MIN_PENETRATION_ENABLED:
+            return penetration
+
+        return penetration - max(0.0, Config.STEERING_WALL_DAMPING_MIN_PENETRATION)
+
+    def _steering_wall_damping_penetration_scale(self, effective_penetration):
+        """Fade in extra wall damping over the configured penetration distance."""
+        if not Config.STEERING_WALL_DAMPING_PENETRATION_RAMP_ENABLED:
+            return 1.0
+
+        ramp_penetration = max(0.0, Config.STEERING_WALL_DAMPING_RAMP_PENETRATION)
+        if ramp_penetration <= 0.0:
+            return 1.0
+
+        return max(0.0, min(1.0, effective_penetration / ramp_penetration))
+
+    def _limit_steering_damping_force(self, damping_force):
+        """Clamp steering damping in motor force units; non-positive disables cap."""
+        limit = Config.STEERING_DAMPING_FORCE_LIMIT
+        if limit <= 0.0:
+            return damping_force
+
+        return max(-limit, min(limit, damping_force))
 
     def _calculate_virtual_wall(
         self,
@@ -329,6 +606,69 @@ class ForceCalculator:
 
         return position > forward_limit or position < -rear_limit
 
+    def _is_moving_deeper_into_virtual_wall(
+        self,
+        position,
+        velocity,
+        motion_range_deg,
+        control_rotation_range,
+        forward_extension_deg=0.0
+    ):
+        """Return True only when penetration and velocity point farther outward."""
+        rear_limit, forward_limit = self._get_virtual_wall_limits(
+            motion_range_deg,
+            control_rotation_range,
+            forward_extension_deg
+        )
+
+        return (
+            (position > forward_limit and velocity > 0.0)
+            or (position < -rear_limit and velocity < 0.0)
+        )
+
+    def _calculate_virtual_wall_penetration(
+        self,
+        position,
+        motion_range_deg,
+        control_rotation_range,
+        forward_extension_deg=0.0
+    ):
+        """Return positive normalized penetration beyond either virtual wall."""
+        rear_limit, forward_limit = self._get_virtual_wall_limits(
+            motion_range_deg,
+            control_rotation_range,
+            forward_extension_deg
+        )
+
+        if position > forward_limit:
+            return position - forward_limit
+        if position < -rear_limit:
+            return -rear_limit - position
+
+        return 0.0
+
+    def _calculate_virtual_wall_outward_velocity(
+        self,
+        position,
+        velocity,
+        motion_range_deg,
+        control_rotation_range,
+        forward_extension_deg=0.0
+    ):
+        """Return positive velocity only when moving farther into a wall."""
+        rear_limit, forward_limit = self._get_virtual_wall_limits(
+            motion_range_deg,
+            control_rotation_range,
+            forward_extension_deg
+        )
+
+        if position > forward_limit:
+            return max(0.0, velocity)
+        if position < -rear_limit:
+            return max(0.0, -velocity)
+
+        return 0.0
+
     def _get_virtual_wall_limits(
         self,
         motion_range_deg,
@@ -343,8 +683,21 @@ class ForceCalculator:
 
         return rear_limit, forward_limit
 
-    def _start_velocity_estimator(self, controller):
-        """Start the high-rate velocity worker with the best available sampler."""
+    def _start_velocity_source(self, controller):
+        """Use hardware velocity when available, otherwise start the host estimator."""
+        has_hardware_velocity = (
+            hasattr(controller, 'get_position_velocity_snapshot')
+            and (
+                not hasattr(controller, 'has_hardware_velocity_data')
+                or controller.has_hardware_velocity_data()
+            )
+        )
+        if has_hardware_velocity:
+            self.using_hardware_velocity = True
+            self.velocity_estimator.stop()
+            return
+
+        self.using_hardware_velocity = False
         if hasattr(controller, 'get_positions_snapshot'):
             self.velocity_estimator.start(
                 lambda: controller.get_positions_snapshot(refresh=False)
@@ -362,7 +715,10 @@ class ForceCalculator:
         )
 
     def _refresh_axis_velocities(self):
-        """Query the velocity thread and copy its thread-safe snapshot."""
+        """Query the velocity source and copy its thread-safe snapshot."""
+        if self.using_hardware_velocity:
+            return
+
         self.axis_velocities = self.velocity_estimator.get_velocities()
 
     def get_axis_velocity(self, player_id, axis):
@@ -371,8 +727,24 @@ class ForceCalculator:
             return self.axis_velocities.get(player_id, {}).get(axis, 0.0)
 
     def get_axis_position_velocity_snapshot(self):
-        """Return estimator positions and velocities from the same sample."""
+        """Return positions and velocities from the active velocity source."""
+        if self.using_hardware_velocity:
+            return self._latest_position_velocity_snapshot
+
         return self.velocity_estimator.get_position_velocity_snapshot()
+
+    def _get_position_velocity_snapshot(self, controller):
+        """Return hardware or host-estimated position/velocity data."""
+        if self.using_hardware_velocity and hasattr(controller, 'get_position_velocity_snapshot'):
+            self._latest_position_velocity_snapshot = (
+                controller.get_position_velocity_snapshot(refresh=False)
+            )
+            return self._latest_position_velocity_snapshot
+
+        self._latest_position_velocity_snapshot = (
+            self.velocity_estimator.get_position_velocity_snapshot()
+        )
+        return self._latest_position_velocity_snapshot
 
     def _calculate_knob_damping(self, ship, player_id, axis, damping_coefficient):
         """Calculate damping force from filtered knob velocity."""
@@ -417,6 +789,20 @@ class ForceCalculator:
         vibration = amplitude * math.sin(2 * math.pi * frequency * phase)
         
         return vibration
+
+    def _calculate_super_blade_steering_vibration(self, player_id):
+        """Calculate a light steering vibration near a super blade."""
+        phase = self.vibration_phase[player_id]
+        frequency = Config.SUPER_BLADE_PROXIMITY_STEERING_FREQ
+        amplitude = Config.SUPER_BLADE_PROXIMITY_STEERING_FORCE
+        return amplitude * math.sin(2 * math.pi * frequency * phase)
+
+    def _calculate_super_blade_throttle_vibration(self, player_id):
+        """Calculate a light throttle vibration near a super blade."""
+        phase = self.vibration_phase[player_id]
+        frequency = Config.SUPER_BLADE_PROXIMITY_THROTTLE_FREQ
+        amplitude = Config.SUPER_BLADE_PROXIMITY_THROTTLE_FORCE
+        return amplitude * math.sin(2 * math.pi * frequency * phase)
     
     def _calculate_mine_kickback(self):
         """
@@ -426,11 +812,34 @@ class ForceCalculator:
             float: Negative force (pushes back)
         """
         return -Config.MINE_KICKBACK_FORCE
+
+    def _calculate_trail_death_throttle_impulse(self):
+        """Calculate throttle-only kickback from dying on a player trail."""
+        return -Config.TRAIL_DEATH_THROTTLE_IMPULSE_FORCE
+
+    def _calculate_mine_hit_steering_vibration(self, player_id):
+        """Calculate short steering vibration from hitting an asteroid."""
+        phase = self.mine_hit_steering_vibration_phase[player_id]
+        frequency = Config.MINE_STEERING_VIBRATION_FREQ
+        amplitude = Config.MINE_STEERING_VIBRATION_AMPLITUDE
+        return amplitude * math.sin(2 * math.pi * frequency * phase)
+
+    def _calculate_asteroid_bounce_steering_vibration(self, player_id):
+        """Calculate short steering vibration from bouncing off an asteroid."""
+        phase = self.asteroid_bounce_steering_vibration_phase[player_id]
+        frequency = Config.ASTEROID_BOUNCE_STEERING_VIBRATION_FREQ
+        amplitude = Config.ASTEROID_BOUNCE_STEERING_FORCE
+        direction = self.asteroid_bounce_steering_direction.get(player_id, 1.0)
+        return direction * amplitude * math.sin(2 * math.pi * frequency * phase)
     
     def trigger_trail_collision(self, player_id):
         """Trigger trail collision vibration"""
         with self._lock:
             manager = self.effect_managers[player_id]
+
+            if not Config.TRAIL_VIBRATION_ENABLED:
+                manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+                return
 
             # Clear any existing trail vibration
             manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
@@ -446,13 +855,67 @@ class ForceCalculator:
         with self._lock:
             manager = self.effect_managers[player_id]
             manager.clear_effects_of_type(HapticEffect.TRAIL_VIBRATION)
+
+    def trigger_super_blade_proximity(self, player_id):
+        """Trigger continuous light vibration while near a super blade."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            if not manager.has_effect(HapticEffect.SUPER_BLADE_PROXIMITY):
+                manager.add_effect(
+                    HapticEffect.SUPER_BLADE_PROXIMITY,
+                    intensity=1.0,
+                    duration=0.0
+                )
+
+    def clear_super_blade_proximity(self, player_id):
+        """Stop super blade proximity vibration."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.SUPER_BLADE_PROXIMITY)
     
     def trigger_mine_hit(self, player_id):
         """Trigger mine kickback effect"""
         with self._lock:
             manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.MINE_KICKBACK)
+            self.mine_hit_steering_vibration_phase[player_id] = 0.0
             manager.add_effect(HapticEffect.MINE_KICKBACK, intensity=1.0, 
                               duration=Config.MINE_KICKBACK_DURATION)
+
+    def trigger_trail_death(self, player_id):
+        """Trigger throttle-only kickback from dying on a player trail."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.TRAIL_DEATH_IMPULSE)
+            manager.add_effect(
+                HapticEffect.TRAIL_DEATH_IMPULSE,
+                intensity=1.0,
+                duration=Config.TRAIL_DEATH_THROTTLE_IMPULSE_DURATION
+            )
+
+    def trigger_star_boost(self, player_id):
+        """Trigger a short throttle impulse when collecting a boost star."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.STAR_BOOST)
+            manager.add_effect(
+                HapticEffect.STAR_BOOST,
+                intensity=1.0,
+                duration=Config.BOOST_THROTTLE_IMPULSE_DURATION
+            )
+
+    def trigger_asteroid_bounce(self, player_id, steering_direction):
+        """Trigger steering and throttle impulse for boosted asteroid bounce."""
+        with self._lock:
+            manager = self.effect_managers[player_id]
+            manager.clear_effects_of_type(HapticEffect.ASTEROID_BOUNCE)
+            self.asteroid_bounce_steering_direction[player_id] = steering_direction
+            self.asteroid_bounce_steering_vibration_phase[player_id] = 0.0
+            manager.add_effect(
+                HapticEffect.ASTEROID_BOUNCE,
+                intensity=1.0,
+                duration=Config.ASTEROID_BOUNCE_FORCE_DURATION
+            )
     
     def get_active_effects(self, player_id):
         """Get list of active effects for a player"""

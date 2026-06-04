@@ -1,7 +1,8 @@
 # Hapkit Motor Receiver
 
 Receives motor command packets from the Teensy and drives the two Hapkit motors.
-Encoder reading now happens on the Teensy 4.1 controller.
+Each player uses one Hapkit receiver board. Encoder reading happens on the
+Teensy 4.1 controller.
 
 This firmware is based on the verified Hapkit receiver test sketch that drove
 the motors from Teensy packets.
@@ -24,7 +25,8 @@ Each Hapkit board controls two motors.
 
 ### Serial Connection From Teensy
 
-- Teensy `Serial4` TX, pin 17 -> Hapkit serial RX
+- Player 1 module A: Teensy `Serial4` TX, pin 17 -> Hapkit serial RX
+- Player 2 module B: Teensy `Serial7` TX, pin 29 -> Hapkit serial RX
 - Teensy GND -> Hapkit GND
 - Baud rate: `115200`
 

@@ -36,7 +36,7 @@ forwards motor commands, and the Hapkit board drives the motors.
 
    ```python
    SERIAL_PORT = '/dev/cu.usbmodem199646501'
-   BAUD_RATE = 115200
+   BAUD_RATE = 1000000
    SIMULATION_MODE = False
    ```
 
@@ -63,7 +63,8 @@ current sketch from the repo.
 4. Select the Teensy serial port.
 5. Click Upload.
 
-The Teensy reads encoder counts and sends them to the laptop at `115200` baud.
+The Teensy reads encoder counts, calculates encoder velocities, and sends both
+to the laptop at `1000000` baud.
 
 ### Hapkit Board
 
@@ -78,13 +79,17 @@ mapping before increasing force gains.
 
 ## Hardware Startup
 
+Only one USB cable is needed between the laptop and Teensy. The Teensy reads
+both players' encoders and forwards motor packets to both Hapkit modules.
+
 1. Upload current firmware to the Teensy and Hapkit board if needed.
 2. Plug in power to the Hapkit board or boards.
-3. Connect Teensy GND to Hapkit GND.
-4. Connect Teensy `Serial4` TX, pin 17, to the Hapkit serial RX.
-5. Plug the Teensy into the computer over USB.
-6. Confirm `game_engine/config.py` points at the Teensy serial port.
-7. Close Arduino Serial Monitor or any other program using the Teensy serial
+3. Connect Teensy GND to both Hapkit GND pins.
+4. Connect Teensy `Serial4` TX, pin 17, to module A Hapkit serial RX.
+5. Connect Teensy `Serial7` TX, pin 29, to module B Hapkit serial RX.
+6. Plug the Teensy into the computer over USB.
+7. Confirm `game_engine/config.py` points at the Teensy serial port.
+8. Close Arduino Serial Monitor or any other program using the Teensy serial
    port before starting the game.
 
 ## Run The Game
@@ -121,9 +126,19 @@ General controls:
 - `R`: restart the current game without returning to the menu.
 - `H`: toggle haptic visualization.
 - `B`: toggle hitbox display.
-- `Z`: zero throttle, hardware mode only.
+- `Shift+S`: toggle the live audio mixer.
+- `M`: toggle music.
+- `N`: toggle sound effects.
+- `T`: switch background music track.
+- `Z`: zero steering and throttle, hardware mode only.
 - Round over: `SPACEBAR` starts the next round.
 - Game over: `SPACEBAR` returns to the menu.
+
+## Audio
+
+Background music and generated sound effects live under
+`game_engine/assets/audio/`. Music and asset licensing notes are tracked in
+`game_engine/assets/audio/CREDITS.md`.
 
 ## Teensy Serial Testing
 
@@ -132,17 +147,17 @@ send force commands.
 
 1. Upload `teensy_controller/teensy_controller.ino`.
 2. Open Arduino IDE Serial Monitor.
-3. Set the baud rate to `115200`.
+3. Set the baud rate to `1000000`.
 4. Rotate each encoder and watch for lines like:
 
    ```text
-   P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS
+   P,P1_STEER_COUNTS,P1_THROTTLE_COUNTS,P2_STEER_COUNTS,P2_THROTTLE_COUNTS,P1_STEER_VEL,P1_THROTTLE_VEL,P2_STEER_VEL,P2_THROTTLE_VEL
    ```
 
    Example:
 
    ```text
-   P,1500,-300,0,0
+   P,1500,-300,0,0,1240.50,-210.00,0.00,0.00
    ```
 
 5. To send a force command from Serial Monitor, send:
@@ -154,7 +169,7 @@ send force commands.
    Example:
 
    ```text
-   F,100,-100,0,0
+   F,100,-100,50,-50
    ```
 
    Start with small values and verify motor direction before increasing force.
